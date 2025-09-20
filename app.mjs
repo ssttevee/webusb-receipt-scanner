@@ -1,5 +1,12 @@
-import { wrap } from "https://esm.sh/comlink@4.4.1";
-import { connectScanner, scanImages } from "./scanner.mjs";
+import * as Comlink from "https://esm.sh/comlink@4.4.1";
+import * as scanner from "./scanner.mjs";
+import { create1BitImagePDF } from "./pdf.mjs";
+import {
+  batch,
+  computed,
+  effect,
+  signal,
+} from "https://esm.sh/@preact/signals";
 
 /* -------------------------------------------------
  * DOM elements
@@ -14,33 +21,54 @@ const pagesList = document.getElementById("pagesList");
 const pageCount = document.getElementById("pageCount");
 const clearPagesBtn = document.getElementById("clearPagesBtn");
 const downloadPdfBtn = document.getElementById("downloadPdfBtn");
-const reprocessBtn = document.getElementById("reprocessBtn");
 
 // Control elements
-const binarizeThreshold = document.getElementById("binarizeThreshold");
-const binarizeThresholdValue = document.getElementById(
-  "binarizeThresholdValue",
-);
-const binarizeBlockSize = document.getElementById("binarizeBlockSize");
-const binarizeBlockSizeValue = document.getElementById(
-  "binarizeBlockSizeValue",
-);
-const trimRightThreshold = document.getElementById("trimRightThreshold");
-const trimRightThresholdValue = document.getElementById(
-  "trimRightThresholdValue",
-);
-const trimRightMax = document.getElementById("trimRightMax");
-const trimRightMaxValue = document.getElementById("trimRightMaxValue");
-const binarizeThresholdReset = document.getElementById(
-  "binarizeThresholdReset",
-);
-const binarizeBlockSizeReset = document.getElementById(
-  "binarizeBlockSizeReset",
-);
-const trimRightThresholdReset = document.getElementById(
-  "trimRightThresholdReset",
-);
-const trimRightMaxReset = document.getElementById("trimRightMaxReset");
+function setupControlSignal(sliderId) {
+  const slider = document.getElementById(sliderId);
+  const textBox = document.getElementById(`${sliderId}Value`);
+  const resetButton = document.getElementById(`${sliderId}Reset`);
+
+  const defaultValue = Number.parseFloat(slider.value);
+  const minValue = Number.parseFloat(slider.min);
+  const maxValue = Number.parseFloat(slider.max);
+
+  textBox.value = slider.value;
+  textBox.max = slider.min;
+  textBox.min = slider.max;
+
+  const sig = signal(defaultValue);
+
+  slider.addEventListener("input", () => {
+    sig.value = Number.parseFloat(slider.value);
+  });
+
+  textBox.addEventListener("input", () => {
+    sig.value = Number.parseFloat(textBox.value);
+  });
+
+  resetButton.addEventListener("click", () => {
+    sig.value = defaultValue;
+  });
+
+  effect(() => {
+    const newValue = sig.value;
+    const parsedValue = Number.parseFloat(newValue);
+    if (parsedValue < minValue) {
+      sig.value = minValue;
+      return;
+    }
+
+    if (parsedValue > maxValue) {
+      sig.value = maxValue;
+      return;
+    }
+
+    slider.value = newValue;
+    textBox.value = newValue;
+  });
+
+  return sig;
+}
 
 /* -------------------------------------------------
  * Status utility
@@ -56,20 +84,26 @@ function showStatus(message, type = "info") {
  * ------------------------------------------------- */
 let worker = null;
 let workerApi = null;
-let workerGeneration = 0;
 let restartingWorker = false;
 
-function initWorker() {
-  workerGeneration++;
+let imageDataRegistry = new WeakMap();
+
+async function initWorker() {
   if (worker) {
     try {
+      workerApi[Comlink.releaseProxy]();
       worker.terminate();
     } catch {
       // ignore
     }
+    imageDataRegistry = new WeakMap();
   }
-  worker = new Worker("./worker.mjs", { type: "module" });
-  workerApi = wrap(worker);
+
+  const temp = new Worker("./worker.mjs", { type: "module" });
+  await new Promise((resolve) => Comlink.expose({ onready: resolve }, temp));
+
+  worker = temp;
+  workerApi = Comlink.wrap(worker);
 }
 
 async function restartWorker(reason = "unknown") {
@@ -77,7 +111,7 @@ async function restartWorker(reason = "unknown") {
   restartingWorker = true;
   console.warn("Restarting image processing worker. Reason:", reason);
   showStatus("Recovering from processing error... restarting engine", "info");
-  initWorker();
+  await initWorker();
   // Allow event loop to tick; OpenCV WASM may need a moment
   await new Promise((r) => setTimeout(r, 10));
   restartingWorker = false;
@@ -89,228 +123,292 @@ initWorker();
 /* -------------------------------------------------
  * Application state
  * ------------------------------------------------- */
-let isConnected = false;
-let isScanning = false;
-let scanAbortController = null;
-let currentImageData = null;
-let scannedPages = [];
+
+const binarizeThreshold = setupControlSignal("binarizeThreshold");
+const binarizeBlockSize = setupControlSignal("binarizeBlockSize");
+const trimRightThreshold = setupControlSignal("trimRightThreshold");
+const trimRightMax = setupControlSignal("trimRightMax");
+
+const connectionState = signal(
+  scanner.connected() ? "CONNECTED" : "DISCONNECTED",
+); // or "CONNECTING" or "CONNECTED"
+const scanAbortController = signal(null);
+const pages = signal([]);
+const currentPageIndex = signal(-1);
+const currentPage = computed(() => pages.value[currentPageIndex.value]);
+
+const previewInFlight = signal(false);
+
+const isConnected = computed(() => connectionState.value === "CONNECTED");
+const isScanning = computed(() => Boolean(scanAbortController.value));
+
+const processingOptions = computed(() => ({
+  binarizeThreshold: binarizeThreshold.value,
+  binarizeBlockSize: binarizeBlockSize.value,
+  trimRightThreshold: trimRightThreshold.value,
+  trimRightMax: trimRightMax.value,
+}));
+
+const defaultProcessingOptions = processingOptions.value;
 
 /* -------------------------------------------------
- * Input synchronization & resets
+ * Preview
  * ------------------------------------------------- */
-function syncInputs(slider, numberInput) {
-  slider.addEventListener("input", () => {
-    numberInput.value = slider.value;
-    updatePreview();
-  });
 
-  numberInput.addEventListener("input", () => {
-    slider.value = numberInput.value;
-    updatePreview();
-  });
-}
-
-syncInputs(binarizeThreshold, binarizeThresholdValue);
-syncInputs(binarizeBlockSize, binarizeBlockSizeValue);
-syncInputs(trimRightThreshold, trimRightThresholdValue);
-syncInputs(trimRightMax, trimRightMaxValue);
-
-function addResetHandler(btn, slider, numberInput, defaultValue) {
-  btn?.addEventListener("click", () => {
-    slider.value = defaultValue;
-    numberInput.value = defaultValue;
-    updatePreview();
-  });
-}
-
-addResetHandler(
-  binarizeThresholdReset,
-  binarizeThreshold,
-  binarizeThresholdValue,
-  60,
-);
-addResetHandler(
-  binarizeBlockSizeReset,
-  binarizeBlockSize,
-  binarizeBlockSizeValue,
-  199,
-);
-addResetHandler(
-  trimRightThresholdReset,
-  trimRightThreshold,
-  trimRightThresholdValue,
-  0.3,
-);
-addResetHandler(trimRightMaxReset, trimRightMax, trimRightMaxValue, 1);
-
-/* -------------------------------------------------
- * Processing options
- * ------------------------------------------------- */
-function getProcessingOptions() {
-  return {
-    binarizeThreshold: Number.parseInt(binarizeThresholdValue.value, 10),
-    binarizeBlockSize: Number.parseInt(binarizeBlockSizeValue.value, 10),
-    trimRightThreshold: Number.parseFloat(trimRightThresholdValue.value),
-    trimRightMax: Number.parseFloat(trimRightMaxValue.value),
-  };
-}
-
-/* -------------------------------------------------
- * Preview (with auto-restart)
- * ------------------------------------------------- */
-async function updatePreview(allowRestart = true) {
-  if (!currentImageData) return;
-
-  const genAtStart = workerGeneration;
-  processedCanvas.parentElement.classList.add("processing");
-  try {
-    const options = getProcessingOptions();
-    const result = await workerApi.processImageData(currentImageData, options);
-
-    // Ignore stale result if worker restarted during call
-    if (genAtStart !== workerGeneration) return;
-
-    const processedCtx = processedCanvas.getContext("2d");
-    processedCanvas.width = result.width;
-    processedCanvas.height = result.height;
-    processedCtx.putImageData(result.previewImageData, 0, 0);
-  } catch (error) {
-    console.error("Preview update failed:", error);
-    if (allowRestart) {
-      await restartWorker(error?.message || "preview update error");
-      try {
-        await updatePreview(false);
-        return;
-      } catch (retryErr) {
-        console.error("Preview retry after restart failed:", retryErr);
-        showStatus("Preview failed after engine restart", "error");
-      }
-    } else {
-      showStatus("Preview update failed - check console for details", "error");
-    }
-  } finally {
+effect(() => {
+  if (previewInFlight.value) {
+    processedCanvas.parentElement.classList.add("processing");
+  } else {
     processedCanvas.parentElement.classList.remove("processing");
+  }
+});
+
+effect(() => {
+  const page = currentPage.value;
+  if (!page) return;
+
+  const { originalImageData, previewImageData } = page;
+
+  const originalCtx = originalCanvas.getContext("2d");
+  originalCanvas.width = originalImageData.width;
+  originalCanvas.height = originalImageData.height;
+  originalCtx.putImageData(originalImageData, 0, 0);
+
+  const processedCtx = processedCanvas.getContext("2d");
+  if (previewImageData) {
+    processedCanvas.width = previewImageData.width;
+    processedCanvas.height = previewImageData.height;
+    processedCtx.putImageData(previewImageData, 0, 0);
+  } else {
+    processedCtx.clearRect(0, 0, processedCanvas.width, processedCanvas.height);
+  }
+});
+
+effect(() => {
+  const page = pages.peek()[currentPageIndex.value];
+  if (!page) return;
+  const { options } = page;
+
+  batch(() => {
+    binarizeThreshold.value = options.binarizeThreshold;
+    binarizeBlockSize.value = options.binarizeBlockSize;
+    trimRightThreshold.value = options.trimRightThreshold;
+    trimRightMax.value = options.trimRightMax;
+  });
+});
+
+effect(() => {
+  let newOptions = processingOptions.value;
+  let newPage = currentPageIndex.value;
+  if (previewInFlight.peek()) return;
+
+  previewInFlight.value = true;
+
+  (async () => {
+    let currentOptions = {};
+    let currentPage = -1;
+    while (
+      (JSON.stringify(currentOptions) !== JSON.stringify(newOptions) ||
+        currentPage !== newPage) &&
+      pages.value[newPage]
+    ) {
+      try {
+        const result = await processImageDataWithRetry(
+          pages.value[newPage].originalImageData,
+          newOptions,
+        );
+
+        const cachedPages = pages.value;
+        if (cachedPages.length > newPage) {
+          pages.value = [
+            ...cachedPages.slice(0, newPage),
+            {
+              ...cachedPages[newPage],
+              options: newOptions,
+              previewImageData: result.previewImageData,
+              packedImage: result.packedData,
+            },
+            ...cachedPages.slice(newPage + 1),
+          ];
+        }
+      } catch (error) {
+        console.error("Preview update failed:", error);
+        showStatus(
+          "Preview update failed - check console for details",
+          "error",
+        );
+        break;
+      }
+
+      currentOptions = newOptions;
+      newOptions = processingOptions.value;
+
+      currentPage = newPage;
+      newPage = currentPageIndex.value;
+    }
+  })().finally(() => {
+    previewInFlight.value = false;
+  });
+});
+
+async function processImageData(imageData, options) {
+  let imageId = imageDataRegistry.get(imageData);
+  if (!imageId) {
+    imageId = await workerApi.registerImage(imageData);
+    imageDataRegistry.set(imageData, imageId);
+  }
+
+  return await workerApi.processImageData(imageId, options);
+}
+
+async function processImageDataWithRetry(imageData, options) {
+  try {
+    return await processImageData(imageData, options);
+  } catch (error) {
+    await restartWorker(error);
+  }
+
+  console.log("retrying image processing after restarting worker");
+  try {
+    const result = await processImageData(imageData, options);
+    console.log("retried result");
+    return result;
+  } catch (error) {
+    console.error("Retry failed:", error);
+    throw error;
   }
 }
 
 /* -------------------------------------------------
  * Scanner connection
  * ------------------------------------------------- */
-connectBtn.addEventListener("click", async () => {
-  try {
-    connectBtn.disabled = true;
-    showStatus("Connecting to scanner...", "info");
-    await connectScanner();
-    isConnected = true;
-    connectBtn.textContent = "Connected";
-    scanBtn.disabled = false;
-    showStatus("Scanner connected successfully", "success");
-  } catch (error) {
-    console.error("Connection failed:", error);
-    showStatus(`Connection failed: ${error.message}`, "error");
-    connectBtn.disabled = false;
+
+effect(() => {
+  switch (connectionState.value) {
+    case "DISCONNECTED":
+      connectBtn.disabled = false;
+      connectBtn.textContent = "Connect Scanner";
+      scanBtn.disabled = true;
+      break;
+    case "CONNECTING":
+      connectBtn.disabled = true;
+      connectBtn.textContent = "Connecting";
+      scanBtn.disabled = true;
+      scanner.connect().then(
+        () => {
+          connectionState.value = "CONNECTED";
+          showStatus("Scanner connected successfully", "success");
+        },
+        (error) => {
+          connectionState.value = "DISCONNECTED";
+          console.error("Connection failed:", error);
+          showStatus(`Connection failed: ${error.message}`, "error");
+        },
+      );
+      break;
+    case "CONNECTED":
+      connectBtn.disabled = true;
+      connectBtn.textContent = "Connected";
+      scanBtn.disabled = false;
+      scanAbortController.value = new AbortController();
   }
+});
+
+connectBtn.addEventListener("click", async () => {
+  connectionState.value = "CONNECTING";
 });
 
 /* -------------------------------------------------
  * Scanning workflow
  * ------------------------------------------------- */
-scanBtn.addEventListener("click", async () => {
-  if (!isConnected) return;
 
-  try {
-    isScanning = true;
+effect(() => {
+  if (isScanning.value) {
     scanBtn.disabled = true;
     stopBtn.disabled = false;
-    scanAbortController = new AbortController();
-
-    showStatus(
-      "Scanning documents... Place document and scan will start automatically",
-      "info",
-    );
-
-    let scanCount = 0;
-    for await (const imageData of scanImages(scanAbortController.signal)) {
-      scanCount++;
-      showStatus(`Processing scan ${scanCount}...`, "info");
-
-      const originalCtx = originalCanvas.getContext("2d");
-      originalCanvas.width = imageData.width;
-      originalCanvas.height = imageData.height;
-      originalCtx.putImageData(imageData, 0, 0);
-
-      currentImageData = imageData;
-
-      try {
-        await updatePreview(); // preview may trigger a restart
-        const options = getProcessingOptions();
-        const result = await workerApi.processImageData(imageData, options);
-
-        const pageData = {
-          id: Date.now() + Math.random(),
-          imageData,
-          processedData: {
-            data: result.packedData,
-            width: result.width,
-            height: result.height,
-          },
-          timestamp: new Date().toLocaleTimeString(),
-        };
-
-        scannedPages.push(pageData);
-        updatePagesList();
-
-        showStatus(
-          `Successfully scanned page ${scannedPages.length}. Ready for next document...`,
-          "success",
-        );
-      } catch (error) {
-        console.error("Image processing failed:", error);
-        showStatus(
-          `Failed to process scan ${scanCount}: ${error.message}`,
-          "error",
-        );
-      }
-    }
-  } catch (error) {
-    if (error.name !== "AbortError") {
-      console.error("Scanning failed:", error);
-      showStatus(`Scanning failed: ${error.message}`, "error");
-    } else {
-      showStatus("Scanning stopped by user", "info");
-    }
-  } finally {
-    isScanning = false;
-    scanBtn.disabled = false;
+  } else {
+    scanBtn.disabled = !isConnected.value;
     stopBtn.disabled = true;
-    scanAbortController = null;
-    if (scannedPages.length > 0) {
-      showStatus(
-        `Scanning complete. ${scannedPages.length} page(s) ready for PDF export`,
-        "success",
-      );
-    }
   }
 });
 
+effect(() => {
+  const ctlr = scanAbortController.value;
+  if (!ctlr) return;
+
+  showStatus(
+    "Waiting for documents... Place document and scan will start automatically",
+    "info",
+  );
+
+  let timeoutId;
+
+  function updateTimeout() {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+
+    timeoutId = setTimeout(() => ctlr.abort("Scanning timed out"), 30000);
+  }
+
+  const abortSignal = ctlr.signal;
+
+  (async () => {
+    updateTimeout();
+    for await (const imageData of scanner.scanImages(abortSignal)) {
+      batch(() => {
+        pages.value = [
+          ...pages.value,
+          { originalImageData: imageData, options: defaultProcessingOptions },
+        ];
+        currentPageIndex.value = pages.value.length - 1;
+      });
+
+      updateTimeout();
+    }
+  })()
+    .catch((error) => {
+      if (abortSignal.aborted) {
+        showStatus(abortSignal.reason, "info");
+      } else {
+        console.error("Scanning failed:", error);
+        showStatus(`Scanning failed: ${error.message}`, "error");
+      }
+    })
+    .finally(() => {
+      scanAbortController.value = null;
+
+      if (pages.value.length) {
+        showStatus(
+          `Scanning complete. ${pages.value.length} page(s) ready for PDF export`,
+          "success",
+        );
+      }
+    });
+});
+
+scanBtn.addEventListener("click", async () => {
+  if (!isConnected.value || isScanning.value) return;
+  scanAbortController.value = new AbortController();
+});
+
 stopBtn.addEventListener("click", () => {
-  if (scanAbortController) {
-    scanAbortController.abort();
-    showStatus("Scanning stopped", "info");
+  if (scanAbortController.value) {
+    scanAbortController.value.abort("Scanning stopped by user");
   }
 });
 
 /* -------------------------------------------------
  * Pages list management
  * ------------------------------------------------- */
-function updatePagesList() {
+
+effect(() => {
+  const scannedPages = pages.value;
   pageCount.textContent = scannedPages.length;
   downloadPdfBtn.disabled = scannedPages.length === 0;
-  reprocessBtn.disabled = scannedPages.length === 0;
 
   pagesList.innerHTML = "";
-
-  scannedPages.forEach((page, index) => {
+  for (const [index, page] of scannedPages.entries()) {
     const pageItem = document.createElement("div");
     pageItem.className = "page-item";
 
@@ -320,79 +418,52 @@ function updatePagesList() {
     thumbnail.height = 50;
 
     const thumbCtx = thumbnail.getContext("2d");
-    const scale = Math.min(
-      50 / page.imageData.width,
-      50 / page.imageData.height,
-    );
-    const width = page.imageData.width * scale;
-    const height = page.imageData.height * scale;
+    const imageData = page.previewImageData ?? page.originalImageData;
+    const scale = Math.min(50 / imageData.width, 50 / imageData.height);
+    const width = imageData.width * scale;
+    const height = imageData.height * scale;
 
     const tempCanvas = document.createElement("canvas");
-    tempCanvas.width = page.imageData.width;
-    tempCanvas.height = page.imageData.height;
+    tempCanvas.width = imageData.width;
+    tempCanvas.height = imageData.height;
     const tempCtx = tempCanvas.getContext("2d");
-    tempCtx.putImageData(page.imageData, 0, 0);
+    tempCtx.putImageData(imageData, 0, 0);
 
     thumbCtx.drawImage(tempCanvas, 0, 0, width, height);
 
     const pageInfo = document.createElement("div");
     pageInfo.innerHTML = `
       <strong>Page ${index + 1}</strong><br>
-      <small>${page.timestamp} - ${page.processedData.width}×${page.processedData.height}</small>
+      <small>${imageData.width}×${imageData.height}</small>
     `;
+
+    const buttons = document.createElement("div");
+    buttons.className = "button-group";
+
+    const editBtn = document.createElement("button");
+    editBtn.textContent = "Edit";
+    editBtn.addEventListener("click", () => {
+      currentPageIndex.value = index;
+    });
 
     const removeBtn = document.createElement("button");
     removeBtn.textContent = "Remove";
-    removeBtn.onclick = () => {
-      scannedPages.splice(index, 1);
-      updatePagesList();
-      showStatus(`Removed page ${index + 1}`, "info");
-    };
+    removeBtn.addEventListener("click", () => {
+      const cachedPages = pages.value;
+      page.value = [
+        ...cachedPages.slice(0, index),
+        ...cachedPages.slice(index + 1),
+      ];
+    });
+
+    buttons.appendChild(editBtn);
+    buttons.appendChild(removeBtn);
 
     pageItem.appendChild(thumbnail);
     pageItem.appendChild(pageInfo);
-    pageItem.appendChild(removeBtn);
+    pageItem.appendChild(buttons);
 
     pagesList.appendChild(pageItem);
-  });
-}
-
-/* -------------------------------------------------
- * Reprocess all pages
- * ------------------------------------------------- */
-reprocessBtn.addEventListener("click", async () => {
-  if (scannedPages.length === 0) return;
-
-  try {
-    reprocessBtn.disabled = true;
-    showStatus(`Reprocessing ${scannedPages.length} page(s)...`, "info");
-
-    const options = getProcessingOptions();
-    for (let i = 0; i < scannedPages.length; i++) {
-      const page = scannedPages[i];
-      showStatus(
-        `Reprocessing page ${i + 1}/${scannedPages.length}...`,
-        "info",
-      );
-
-      const result = await workerApi.processImageData(page.imageData, options);
-      page.processedData = {
-        data: result.packedData,
-        width: result.width,
-        height: result.height,
-      };
-    }
-
-    updatePagesList();
-    showStatus(
-      `Successfully reprocessed ${scannedPages.length} page(s)`,
-      "success",
-    );
-  } catch (error) {
-    console.error("Reprocessing failed:", error);
-    showStatus(`Reprocessing failed: ${error.message}`, "error");
-  } finally {
-    reprocessBtn.disabled = scannedPages.length === 0;
   }
 });
 
@@ -400,8 +471,7 @@ reprocessBtn.addEventListener("click", async () => {
  * Clear pages
  * ------------------------------------------------- */
 clearPagesBtn.addEventListener("click", () => {
-  scannedPages = [];
-  updatePagesList();
+  pages.value = [];
   showStatus("All pages cleared", "info");
 });
 
@@ -409,19 +479,25 @@ clearPagesBtn.addEventListener("click", () => {
  * PDF generation
  * ------------------------------------------------- */
 downloadPdfBtn.addEventListener("click", async () => {
+  const scannedPages = pages.value;
   if (scannedPages.length === 0) return;
 
   try {
     downloadPdfBtn.disabled = true;
     showStatus(`Generating PDF with ${scannedPages.length} page(s)...`, "info");
 
-    const images = scannedPages.map((page) => page.processedData);
-    const pdfData = await workerApi.createPDF(images);
+    const pdfData = await create1BitImagePDF(
+      scannedPages.map((page) => ({
+        data: page.packedImage,
+        width: page.previewImageData.width,
+        height: page.previewImageData.height,
+      })),
+    );
 
     if ("showSaveFilePicker" in window) {
       try {
         const fileHandle = await window.showSaveFilePicker({
-          suggestedName: `scanned-document-${new Date().toISOString().slice(0, 10)}-${Date.now()}.pdf`,
+          suggestedName: `${Date.now()}.pdf`,
           types: [
             {
               description: "PDF files",
@@ -458,6 +534,8 @@ downloadPdfBtn.addEventListener("click", async () => {
         `PDF downloaded with ${scannedPages.length} page(s)`,
         "success",
       );
+
+      pages.value = [];
     }
   } catch (error) {
     console.error("PDF generation failed:", error);
@@ -468,43 +546,9 @@ downloadPdfBtn.addEventListener("click", async () => {
 });
 
 /* -------------------------------------------------
- * Keyboard shortcuts
- * ------------------------------------------------- */
-document.addEventListener("keydown", (e) => {
-  if (e.ctrlKey || e.metaKey) {
-    switch (e.key) {
-      case "s":
-        e.preventDefault();
-        if (!scanBtn.disabled) {
-          scanBtn.click();
-        }
-        break;
-      case "Enter":
-        e.preventDefault();
-        if (!downloadPdfBtn.disabled) {
-          downloadPdfBtn.click();
-        }
-        break;
-      case "Delete":
-      case "Backspace":
-        e.preventDefault();
-        if (scannedPages.length > 0) {
-          clearPagesBtn.click();
-        }
-        break;
-    }
-  }
-
-  if (e.key === "Escape" && isScanning) {
-    e.preventDefault();
-    stopBtn.click();
-  }
-});
-
-/* -------------------------------------------------
  * Initial status
  * ------------------------------------------------- */
-showStatus(
-  "Ready to connect scanner (Ctrl+S to scan, Ctrl+Enter to download PDF)",
-  "info",
-);
+
+if (!isConnected.value) {
+  showStatus("Ready to connect scanner", "info");
+}

@@ -1,6 +1,5 @@
-import { expose } from "https://esm.sh/comlink@4.4.1";
+import * as Comlink from "https://esm.sh/comlink@4.4.1";
 import { cv, processImage, packImage } from "./imgproc.mjs";
-import { create1BitImagePDF } from "./pdf.mjs";
 
 function matToImageData(mat) {
   // Ensure the mat is in RGBA format
@@ -27,39 +26,45 @@ function matToImageData(mat) {
   return imageData;
 }
 
+const registeredImages = {};
+
 const api = {
-  async processImageData(imageData, options = {}) {
+  registerImage(imageData) {
+    const id = crypto.randomUUID();
+    registeredImages[id] = new cv.matFromImageData(imageData);
+    return id;
+  },
+  deleteImage(imageId) {
+    registeredImages[imageId]?.delete();
+    delete registeredImages[imageId];
+  },
+  async processImageData(imageId, options = {}) {
     // Convert to OpenCV Mat
-    const im = new cv.matFromImageData(imageData);
+    const im = registeredImages[imageId];
+    if (!im) throw new Error(`Image ${imageId} not found`);
+
+    // Process the image with the given options
+    const processed = processImage(im, options);
 
     try {
-      // Process the image with the given options
-      const processed = processImage(im, options);
+      // Convert processed image back to ImageData for preview
+      // For binary images, we need to convert single channel to RGBA
 
-      try {
-        // Convert processed image back to ImageData for preview
-        // For binary images, we need to convert single channel to RGBA
+      // Pack the image for PDF
+      const packedData = packImage(processed);
 
-        // Pack the image for PDF
-        const packedData = packImage(processed);
-
-        return {
-          previewImageData: matToImageData(processed),
-          packedData,
-          width: processed.cols,
-          height: processed.rows,
-        };
-      } finally {
-        processed.delete();
-      }
+      return {
+        previewImageData: matToImageData(processed),
+        packedData,
+      };
     } finally {
-      im.delete();
+      processed.delete();
     }
-  },
-
-  async createPDF(images) {
-    return await create1BitImagePDF(images);
   },
 };
 
-expose(api);
+Comlink.expose(api);
+
+const callbackApi = Comlink.wrap(globalThis);
+callbackApi.onready();
+callbackApi[Comlink.releaseProxy]();

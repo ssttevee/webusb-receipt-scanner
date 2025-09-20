@@ -80,11 +80,13 @@
                 border-radius: 8px;
                 box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
                 margin-bottom: 20px;
+                display: flex;
+                flex-direction: column;
+                gap: 15px;
             }
             .button-group {
                 display: flex;
                 gap: 10px;
-                margin-bottom: 15px;
             }
             button {
                 padding: 10px 20px;
@@ -105,7 +107,6 @@
             .status {
                 padding: 10px;
                 border-radius: 4px;
-                margin-bottom: 15px;
                 font-weight: 500;
             }
             .status.info {
@@ -224,26 +225,17 @@
                                 a single PDF
                             </li>
                         </ol>
-                        <h4>Keyboard Shortcuts:</h4>
-                        <ul>
-                            <li><kbd>Ctrl+S</kbd> - Start scanning</li>
-                            <li><kbd>Ctrl+Enter</kbd> - Download PDF</li>
-                            <li><kbd>Ctrl+Delete</kbd> - Clear all pages</li>
-                            <li><kbd>Escape</kbd> - Stop scanning</li>
-                        </ul>
                     </div>
                 </details>
             </div>
 
             <div class="scan-controls">
                 <div class="button-group">
-                    <button id="connectBtn">Connect Scanner</button>
-                    <button id="scanBtn" disabled>Scan Document</button>
+                    <button id="connectBtn" disabled>Connect Scanner</button>
+                    <button id="scanBtn" disabled>Start Scanning</button>
                     <button id="stopBtn" disabled>Stop Scanning</button>
                 </div>
-                <div id="status" class="status info hidden">
-                    Ready to connect scanner
-                </div>
+                <div id="status" class="status info">Loading...</div>
             </div>
 
             <div class="controls">
@@ -340,7 +332,7 @@
                             min="3"
                             max="299"
                             value="199"
-                            step="2"
+                            step="1"
                         />
                         <input
                             type="number"
@@ -348,7 +340,7 @@
                             min="3"
                             max="299"
                             value="199"
-                            step="2"
+                            step="1"
                         />
                     </div>
                 </div>
@@ -380,9 +372,6 @@
                 <div class="pages-header">
                     <h3>Scanned Pages (<span id="pageCount">0</span>)</h3>
                     <div class="button-group">
-                        <button id="reprocessBtn" disabled>
-                            Reprocess All
-                        </button>
                         <button id="clearPagesBtn">Clear All</button>
                         <button id="downloadPdfBtn" disabled>
                             Download PDF
