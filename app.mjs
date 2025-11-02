@@ -1,12 +1,12 @@
-import * as Comlink from "https://esm.sh/comlink@4.4.1";
-import * as scanner from "./scanner.mjs";
-import { create1BitImagePDF } from "./pdf.mjs";
 import {
   batch,
   computed,
   effect,
   signal,
 } from "https://esm.sh/@preact/signals";
+import * as Comlink from "https://esm.sh/comlink@4.4.1";
+import { create1BitImagePDF } from "./pdf.mjs";
+import * as scanner from "./scanner.mjs";
 
 /* -------------------------------------------------
  * DOM elements
@@ -164,17 +164,24 @@ effect(() => {
 });
 
 effect(() => {
+  const originalCtx = originalCanvas.getContext("2d");
+  const processedCtx = processedCanvas.getContext("2d");
+
   const page = currentPage.value;
-  if (!page) return;
+  if (!page) {
+    originalCanvas.width = processedCanvas.width = 400;
+    originalCanvas.height = processedCanvas.height = 300;
+    originalCtx.clearRect(0, 0, originalCanvas.width, originalCanvas.height);
+    processedCtx.clearRect(0, 0, processedCanvas.width, processedCanvas.height);
+    return;
+  }
 
   const { originalImageData, previewImageData } = page;
 
-  const originalCtx = originalCanvas.getContext("2d");
   originalCanvas.width = originalImageData.width;
   originalCanvas.height = originalImageData.height;
   originalCtx.putImageData(originalImageData, 0, 0);
 
-  const processedCtx = processedCanvas.getContext("2d");
   if (previewImageData) {
     processedCanvas.width = previewImageData.width;
     processedCanvas.height = previewImageData.height;
@@ -186,8 +193,12 @@ effect(() => {
 
 effect(() => {
   const page = pages.peek()[currentPageIndex.value];
-  if (!page) return;
-  const { options } = page;
+  let options;
+  if (!page) {
+    options = defaultProcessingOptions;
+  } else {
+    ({ options } = page);
+  }
 
   batch(() => {
     binarizeThreshold.value = options.binarizeThreshold;
@@ -449,11 +460,14 @@ effect(() => {
     const removeBtn = document.createElement("button");
     removeBtn.textContent = "Remove";
     removeBtn.addEventListener("click", () => {
-      const cachedPages = pages.value;
-      page.value = [
-        ...cachedPages.slice(0, index),
-        ...cachedPages.slice(index + 1),
-      ];
+      batch(() => {
+        const cachedPages = pages.value;
+        page.value = [
+          ...cachedPages.slice(0, index),
+          ...cachedPages.slice(index + 1),
+        ];
+        currentPageIndex.value -= 1;
+      });
     });
 
     buttons.appendChild(editBtn);
@@ -471,7 +485,10 @@ effect(() => {
  * Clear pages
  * ------------------------------------------------- */
 clearPagesBtn.addEventListener("click", () => {
-  pages.value = [];
+  batch(() => {
+    pages.value = [];
+    currentPageIndex.value = -1;
+  });
   showStatus("All pages cleared", "info");
 });
 
