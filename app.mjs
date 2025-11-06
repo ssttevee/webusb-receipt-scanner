@@ -7,6 +7,12 @@ import {
 import * as Comlink from "https://esm.sh/comlink@4.4.1";
 import { create1BitImagePDF } from "./pdf.mjs";
 import * as scanner from "./scanner.mjs";
+import {
+  initOCR,
+  recognizeText,
+  parseDateTime,
+  formatDateForFilename,
+} from "./ocr.mjs";
 
 /* -------------------------------------------------
  * DOM elements
@@ -20,7 +26,13 @@ const processedCanvas = document.getElementById("processedCanvas");
 const pagesList = document.getElementById("pagesList");
 const pageCount = document.getElementById("pageCount");
 const clearPagesBtn = document.getElementById("clearPagesBtn");
+const downloadFilename = document.getElementById("downloadFilename");
 const downloadPdfBtn = document.getElementById("downloadPdfBtn");
+const selectFolderBtn = document.getElementById("selectFolderBtn");
+const expectedYear = document.getElementById("expectedYear");
+const expectedMonth = document.getElementById("expectedMonth");
+const selectionOverlay = document.getElementById("selectionOverlay");
+const selectionBox = document.getElementById("selectionBox");
 
 // Control elements
 function setupControlSignal(sliderId) {
@@ -139,6 +151,10 @@ const currentPage = computed(() => pages.value[currentPageIndex.value]);
 
 const previewInFlight = signal(false);
 
+const autoSaveFolderHandle = signal(null);
+const detectedDate = signal(null);
+const dateSelection = signal(null);
+
 const isConnected = computed(() => connectionState.value === "CONNECTED");
 const isScanning = computed(() => Boolean(scanAbortController.value));
 
@@ -150,6 +166,129 @@ const processingOptions = computed(() => ({
 }));
 
 const defaultProcessingOptions = processingOptions.value;
+
+/* -------------------------------------------------
+ * OCR Date Detection
+ * ------------------------------------------------- */
+
+initOCR();
+
+expectedYear.value = new Date().getFullYear();
+expectedMonth.value = new Date().getMonth() + 1;
+
+effect(() => {
+  selectionOverlay.style.display = dateSelection.value ? "block" : "none";
+});
+
+processedCanvas.addEventListener("mousedown", (e) => {
+  const rect = processedCanvas.getBoundingClientRect();
+  const scaleX = processedCanvas.width / rect.width;
+  const scaleY = processedCanvas.height / rect.height;
+
+  const x = (e.clientX - rect.left) * scaleX;
+  const y = (e.clientY - rect.top) * scaleY;
+
+  dateSelection.value = { x, y, width: 0, height: 0 };
+});
+
+processedCanvas.addEventListener("mousemove", (e) => {
+  if (!dateSelection.value) return;
+
+  const startX = dateSelection.value.x;
+  const startY = dateSelection.value.y;
+
+  const rect = processedCanvas.getBoundingClientRect();
+  const scaleX = processedCanvas.width / rect.width;
+  const scaleY = processedCanvas.height / rect.height;
+
+  const x = (e.clientX - rect.left) * scaleX;
+  const y = (e.clientY - rect.top) * scaleY;
+
+  const minX = Math.min(startX, x);
+  const minY = Math.min(startY, y);
+  const width = Math.abs(x - startX);
+  const height = Math.abs(y - startY);
+
+  dateSelection.value = { x: minX, y: minY, width: width, height: height };
+
+  const displayRect = processedCanvas.getBoundingClientRect();
+  const displayScaleX = displayRect.width / processedCanvas.width;
+  const displayScaleY = displayRect.height / processedCanvas.height;
+
+  selectionOverlay.setAttribute("width", displayRect.width);
+  selectionOverlay.setAttribute("height", displayRect.height);
+  selectionBox.setAttribute("x", minX * displayScaleX);
+  selectionBox.setAttribute("y", minY * displayScaleY);
+  selectionBox.setAttribute("width", width * displayScaleX);
+  selectionBox.setAttribute("height", height * displayScaleY);
+});
+
+processedCanvas.addEventListener("mouseup", async () => {
+  if (!dateSelection.value) return;
+
+  const { x: minX, y: minY, width, height } = dateSelection.value;
+
+  dateSelection.value = null;
+
+  if (width < 10 || height < 10) {
+    showStatus("Selection too small, please try again", "error");
+    return;
+  }
+
+  try {
+    showStatus("Reading date from selection...", "info");
+
+    const page = currentPage.value;
+    const imageData = page.previewImageData || page.originalImageData;
+
+    const canvas = document.createElement("canvas");
+    canvas.width = imageData.width;
+    canvas.height = imageData.height;
+    const ctx = canvas.getContext("2d");
+    ctx.putImageData(imageData, 0, 0);
+
+    const croppedCanvas = document.createElement("canvas");
+    croppedCanvas.width = width;
+    croppedCanvas.height = height;
+    const croppedCtx = croppedCanvas.getContext("2d");
+    croppedCtx.drawImage(
+      canvas,
+      minX,
+      minY,
+      width,
+      height,
+      0,
+      0,
+      width,
+      height,
+    );
+
+    const croppedImageData = croppedCtx.getImageData(0, 0, width, height);
+
+    const text = await recognizeText(croppedImageData);
+    console.log("OCR Result:", text);
+
+    const year = expectedYear.value ? parseInt(expectedYear.value, 10) : null;
+    const month = expectedMonth.value
+      ? parseInt(expectedMonth.value, 10)
+      : null;
+
+    const parsedDate = parseDateTime(text, year, month);
+    if (parsedDate) {
+      detectedDate.value = parsedDate;
+
+      showStatus(
+        `Date detected: ${formatDateForFilename(parsedDate)}`,
+        "success",
+      );
+    } else {
+      showStatus("Could not detect a valid date from the selection", "error");
+    }
+  } catch (error) {
+    console.error("OCR failed:", error);
+    showStatus(`OCR failed: ${error.message}`, "error");
+  }
+});
 
 /* -------------------------------------------------
  * Preview
@@ -193,6 +332,7 @@ effect(() => {
 
 effect(() => {
   const page = pages.peek()[currentPageIndex.value];
+
   let options;
   if (!page) {
     options = defaultProcessingOptions;
@@ -489,6 +629,8 @@ clearPagesBtn.addEventListener("click", () => {
     pages.value = [];
     currentPageIndex.value = -1;
   });
+  detectedDate.value = null;
+  selectionOverlay.style.display = "none";
   showStatus("All pages cleared", "info");
 });
 
@@ -511,10 +653,17 @@ downloadPdfBtn.addEventListener("click", async () => {
       })),
     );
 
-    if ("showSaveFilePicker" in window) {
+    const filename = `${downloadFilename.value || Date.now()}.pdf`;
+
+    let fileHandle;
+    if (downloadFilename.value && autoSaveFolderHandle.value) {
+      fileHandle = await autoSaveFolderHandle.value.getFileHandle(filename, {
+        create: true,
+      });
+    } else if ("showSaveFilePicker" in window) {
       try {
-        const fileHandle = await window.showSaveFilePicker({
-          suggestedName: `${Date.now()}.pdf`,
+        fileHandle = await window.showSaveFilePicker({
+          suggestedName: filename,
           types: [
             {
               description: "PDF files",
@@ -522,28 +671,31 @@ downloadPdfBtn.addEventListener("click", async () => {
             },
           ],
         });
-
-        const writable = await fileHandle.createWritable();
-        await writable.write(pdfData);
-        await writable.close();
-
-        showStatus(
-          `PDF saved successfully with ${scannedPages.length} page(s)`,
-          "success",
-        );
       } catch (error) {
         if (error.name !== "AbortError") {
           throw error;
         } else {
           showStatus("Save cancelled by user", "info");
+          return;
         }
       }
+    }
+
+    if (fileHandle) {
+      const writable = await fileHandle.createWritable();
+      await writable.write(pdfData);
+      await writable.close();
+
+      showStatus(
+        `PDF saved successfully with ${scannedPages.length} page(s)`,
+        "success",
+      );
     } else {
       const blob = new Blob([pdfData], { type: "application/pdf" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `scanned-document-${new Date().toISOString().slice(0, 10)}-${Date.now()}.pdf`;
+      a.download = filename;
       a.click();
       URL.revokeObjectURL(url);
 
@@ -551,15 +703,35 @@ downloadPdfBtn.addEventListener("click", async () => {
         `PDF downloaded with ${scannedPages.length} page(s)`,
         "success",
       );
-
-      pages.value = [];
     }
+
+    pages.value = [];
   } catch (error) {
     console.error("PDF generation failed:", error);
     showStatus(`PDF generation failed: ${error.message}`, "error");
   } finally {
     downloadPdfBtn.disabled = scannedPages.length === 0;
   }
+});
+
+selectFolderBtn.addEventListener("click", async () => {
+  try {
+    autoSaveFolderHandle.value = await window.showDirectoryPicker({
+      id: "auto-save-to-folder",
+      mode: "readwrite",
+    });
+  } catch (error) {
+    console.error("Folder selection failed:", error);
+    showStatus(`Folder selection failed: ${error.message}`, "error");
+  }
+});
+
+effect(() => {
+  if (!detectedDate.value) {
+    return;
+  }
+
+  downloadFilename.value = formatDateForFilename(detectedDate.value);
 });
 
 /* -------------------------------------------------

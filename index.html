@@ -120,6 +120,11 @@
                 margin: 0 0 15px 0;
                 font-size: 18px;
             }
+            .input-group {
+                display: flex;
+                gap: 10px;
+                margin-bottom: 10px;
+            }
             .control-group {
                 margin-bottom: 15px;
             }
@@ -128,6 +133,12 @@
                 margin-bottom: 5px;
                 font-weight: 500;
                 font-size: 14px;
+            }
+            .control-group input {
+                flex: 1;
+                padding: 8px;
+                border: 1px solid #ddd;
+                border-radius: 4px;
             }
             .control-group input[type="range"] {
                 width: 100%;
@@ -175,10 +186,31 @@
             .preview-section h4 {
                 margin: 0 0 10px 0;
             }
+            .canvas-container {
+                position: relative;
+                display: inline-block;
+            }
+            .selection-overlay {
+                position: absolute;
+                top: 0;
+                left: 0;
+                pointer-events: none;
+            }
+            .selection-box {
+                fill: rgba(0, 123, 255, 0.1);
+                stroke: #007bff;
+                stroke-width: 2;
+                stroke-dasharray: 5, 5;
+                pointer-events: none;
+            }
             canvas {
                 max-width: 100%;
                 border: 1px solid #ddd;
                 border-radius: 4px;
+                display: block;
+            }
+            canvas#processedCanvas {
+                cursor: crosshair;
             }
             .right-sidebar {
                 width: 320px;
@@ -189,6 +221,11 @@
             }
             .pages-list {
                 height: 100%;
+                display: flex;
+                flex-direction: column;
+            }
+            .pages-list #pagesList {
+                flex-grow: 1;
             }
             .pages-header {
                 margin-bottom: 15px;
@@ -256,8 +293,7 @@
                 <div id="status" class="status info">Loading...</div>
             </div>
             <div class="header-right">
-                <button id="clearPagesBtn">Clear All</button>
-                <button id="downloadPdfBtn" disabled>Download PDF</button>
+                <button id="clearPagesBtn">Clear Pages</button>
             </div>
         </div>
 
@@ -384,11 +420,22 @@
                         </div>
                         <div class="preview-section">
                             <h4>Processed</h4>
-                            <canvas
-                                id="processedCanvas"
-                                width="400"
-                                height="300"
-                            ></canvas>
+                            <div class="canvas-container">
+                                <canvas
+                                    id="processedCanvas"
+                                    width="400"
+                                    height="300"
+                                ></canvas>
+                                <svg
+                                    id="selectionOverlay"
+                                    class="selection-overlay"
+                                >
+                                    <rect
+                                        id="selectionBox"
+                                        class="selection-box"
+                                    />
+                                </svg>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -399,7 +446,52 @@
                     <div class="pages-header">
                         <h3>Scanned Pages (<span id="pageCount">0</span>)</h3>
                     </div>
+
                     <div id="pagesList"></div>
+
+                    <div class="control-panel">
+                        <h3>Save PDF</h3>
+                        <div class="control-group">
+                            <label>Filename</label>
+                            <div class="input-group">
+                                <input
+                                    id="downloadFilename"
+                                    style="flex-grow: 1"
+                                />
+                                <button id="downloadPdfBtn" disabled>
+                                    Save
+                                </button>
+                            </div>
+                        </div>
+                        <div class="control-group">
+                            <button type="button" id="selectFolderBtn">
+                                Auto Save To Folder
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="control-panel">
+                        <h3>Date Detection Settings</h3>
+                        <div class="control-group">
+                            <label>Expected Year/Month</label>
+                            <div class="input-group">
+                                <input
+                                    type="number"
+                                    id="expectedYear"
+                                    placeholder="Year (e.g., 2024)"
+                                    min="2000"
+                                    max="2099"
+                                />
+                                <input
+                                    type="number"
+                                    id="expectedMonth"
+                                    placeholder="Month (1-12)"
+                                    min="1"
+                                    max="12"
+                                />
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
