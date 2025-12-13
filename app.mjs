@@ -705,7 +705,10 @@ downloadPdfBtn.addEventListener("click", async () => {
       );
     }
 
-    pages.value = [];
+    batch(() => {
+      pages.value = [];
+      currentPageIndex.value = -1;
+    });
   } catch (error) {
     console.error("PDF generation failed:", error);
     showStatus(`PDF generation failed: ${error.message}`, "error");
