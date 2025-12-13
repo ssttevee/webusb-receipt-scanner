@@ -75,7 +75,41 @@ export function parseDateTime(text, expectedYear, expectedMonth) {
   };
 }
 
+const MONTH_ABBREV_MAP = {
+  jan: 1,
+  feb: 2,
+  mar: 3,
+  apr: 4,
+  may: 5,
+  jun: 6,
+  jul: 7,
+  aug: 8,
+  sep: 9,
+  oct: 10,
+  nov: 11,
+  dec: 12,
+};
+
 export function parseDate(text, expectedYear, expectedMonth) {
+  const monthAbbrevPattern =
+    /\b(\d{1,2})[/\-\s](jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[/\-\s](\d{2,4})\b/gi;
+  let match = monthAbbrevPattern.exec(text);
+  if (match) {
+    const day = parseInt(match[1], 10);
+    const month = MONTH_ABBREV_MAP[match[2].toLowerCase()];
+    let year = parseInt(match[3], 10);
+    if (year < 100) {
+      year = 2000 + year;
+    }
+    if (
+      isValidDate(year, month, day) &&
+      (!expectedYear || year === expectedYear) &&
+      (!expectedMonth || month === expectedMonth)
+    ) {
+      return { year, month, day };
+    }
+  }
+
   const cleanedText = text.replace(/[^\d\/\-\s]/g, " ").trim();
 
   const datePatterns = [
@@ -106,7 +140,9 @@ export function parseDate(text, expectedYear, expectedMonth) {
 
 export function parseTime(text) {
   const timePatterns = [
+    /\b(\d{1,2}):(\d{2}):\d{2}\s*(am|pm|a\.m\.|p\.m\.)\b/gi,
     /\b(\d{1,2}):(\d{2})\s*(am|pm|a\.m\.|p\.m\.)\b/gi,
+    /\b(\d{1,2}):(\d{2}):\d{2}\b/g,
     /\b(\d{1,2}):(\d{2})\b/g,
     /\b(\d{1,2})(\d{2})\s*(am|pm|a\.m\.|p\.m\.)\b/gi,
   ];
@@ -123,11 +159,11 @@ export function parseTime(text) {
       }
 
       if (meridiem) {
-        if (meridiem === "pm" || meridiem === "pm") {
+        if (meridiem === "pm") {
           if (hour !== 12) {
             hour += 12;
           }
-        } else if (meridiem === "am" || meridiem === "am") {
+        } else if (meridiem === "am") {
           if (hour === 12) {
             hour = 0;
           }
