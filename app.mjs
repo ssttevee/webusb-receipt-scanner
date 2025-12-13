@@ -562,6 +562,9 @@ effect(() => {
   for (const [index, page] of scannedPages.entries()) {
     const pageItem = document.createElement("div");
     pageItem.className = "page-item";
+    pageItem.addEventListener("click", () => {
+      currentPageIndex.value = index;
+    });
 
     const thumbnail = document.createElement("canvas");
     thumbnail.className = "page-thumbnail";
@@ -591,18 +594,19 @@ effect(() => {
     const buttons = document.createElement("div");
     buttons.className = "button-group";
 
-    const editBtn = document.createElement("button");
-    editBtn.textContent = "Edit";
-    editBtn.addEventListener("click", () => {
-      currentPageIndex.value = index;
+    const saveBtn = document.createElement("button");
+    saveBtn.textContent = "Save";
+    saveBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
     });
 
     const removeBtn = document.createElement("button");
-    removeBtn.textContent = "Remove";
-    removeBtn.addEventListener("click", () => {
+    removeBtn.textContent = "×";
+    removeBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
       batch(() => {
         const cachedPages = pages.value;
-        page.value = [
+        pages.value = [
           ...cachedPages.slice(0, index),
           ...cachedPages.slice(index + 1),
         ];
@@ -610,7 +614,7 @@ effect(() => {
       });
     });
 
-    buttons.appendChild(editBtn);
+    buttons.appendChild(saveBtn);
     buttons.appendChild(removeBtn);
 
     pageItem.appendChild(thumbnail);
