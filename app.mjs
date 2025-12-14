@@ -33,6 +33,7 @@ const expectedYear = document.getElementById("expectedYear");
 const expectedMonth = document.getElementById("expectedMonth");
 const selectionOverlay = document.getElementById("selectionOverlay");
 const selectionBox = document.getElementById("selectionBox");
+const folderName = document.getElementById("folderName");
 
 // Control elements
 function setupControlSignal(sliderId) {
@@ -731,6 +732,10 @@ selectFolderBtn.addEventListener("click", async () => {
     console.error("Folder selection failed:", error);
     showStatus(`Folder selection failed: ${error.message}`, "error");
   }
+});
+
+effect(() => {
+  folderName.textContent = autoSaveFolderHandle.value?.name;
 });
 
 effect(() => {
