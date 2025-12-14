@@ -714,6 +714,7 @@ downloadPdfBtn.addEventListener("click", async () => {
       pages.value = [];
       currentPageIndex.value = -1;
     });
+    downloadFilename.value = "";
   } catch (error) {
     console.error("PDF generation failed:", error);
     showStatus(`PDF generation failed: ${error.message}`, "error");
