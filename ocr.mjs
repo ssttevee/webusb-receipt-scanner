@@ -138,13 +138,22 @@ export function parseDate(text, expectedYear, expectedMonth) {
   return null;
 }
 
+function normalizeMeridiem(meridiem) {
+  if (!meridiem) return null;
+  const cleaned = meridiem.toLowerCase().replace(/\./g, "");
+  if (/^[ap][mnh]$/.test(cleaned) || /^[ap]$/.test(cleaned)) {
+    return cleaned.startsWith("p") ? "pm" : "am";
+  }
+  return null;
+}
+
 export function parseTime(text) {
   const timePatterns = [
-    /\b(\d{1,2}):(\d{2}):\d{2}\s*(am|pm|a\.m\.|p\.m\.)\b/gi,
-    /\b(\d{1,2}):(\d{2})\s*(am|pm|a\.m\.|p\.m\.)\b/gi,
+    /\b(\d{1,2}):(\d{2}):\d{2}\s*([ap][.\s]*[mnh]\.?|[ap]\.)\b/gi,
+    /\b(\d{1,2}):(\d{2})\s*([ap][.\s]*[mnh]\.?|[ap]\.)\b/gi,
     /\b(\d{1,2}):(\d{2}):\d{2}\b/g,
     /\b(\d{1,2}):(\d{2})\b/g,
-    /\b(\d{1,2})(\d{2})\s*(am|pm|a\.m\.|p\.m\.)\b/gi,
+    /\b(\d{1,2})(\d{2})\s*([ap][.\s]*[mnh]\.?|[ap]\.)\b/gi,
   ];
 
   for (const pattern of timePatterns) {
@@ -152,7 +161,7 @@ export function parseTime(text) {
     if (match) {
       let hour = parseInt(match[1], 10);
       const minute = parseInt(match[2], 10);
-      const meridiem = match[3]?.toLowerCase().replace(/\./g, "");
+      const meridiem = normalizeMeridiem(match[3]);
 
       if (minute >= 60) {
         continue;
