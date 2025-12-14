@@ -77,36 +77,69 @@ export function parseDateTime(text, expectedYear, expectedMonth) {
 
 const MONTH_ABBREV_MAP = {
   jan: 1,
+  january: 1,
   feb: 2,
+  february: 2,
   mar: 3,
+  march: 3,
   apr: 4,
+  april: 4,
   may: 5,
   jun: 6,
+  june: 6,
   jul: 7,
+  july: 7,
   aug: 8,
+  august: 8,
   sep: 9,
+  sept: 9,
+  september: 9,
   oct: 10,
+  october: 10,
   nov: 11,
+  november: 11,
   dec: 12,
+  december: 12,
 };
 
+const MONTH_PATTERN =
+  "jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?";
+
 export function parseDate(text, expectedYear, expectedMonth) {
-  const monthAbbrevPattern =
-    /\b(\d{1,2})[/\-\s](jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[/\-\s](\d{2,4})\b/gi;
-  let match = monthAbbrevPattern.exec(text);
-  if (match) {
-    const day = parseInt(match[1], 10);
-    const month = MONTH_ABBREV_MAP[match[2].toLowerCase()];
-    let year = parseInt(match[3], 10);
-    if (year < 100) {
-      year = 2000 + year;
-    }
-    if (
-      isValidDate(year, month, day) &&
-      (!expectedYear || year === expectedYear) &&
-      (!expectedMonth || month === expectedMonth)
-    ) {
-      return { year, month, day };
+  const monthAbbrevPatterns = [
+    new RegExp(
+      `\\b(\\d{1,2})[/\\-\\s](${MONTH_PATTERN})[/\\-\\s](\\d{2,4})\\b`,
+      "gi",
+    ),
+    new RegExp(
+      `\\b(${MONTH_PATTERN})[/\\-\\s.](\\d{1,2})[/\\-\\s.,]+\\s*(\\d{2,4})\\b`,
+      "gi",
+    ),
+  ];
+
+  for (const pattern of monthAbbrevPatterns) {
+    let match = pattern.exec(text);
+    if (match) {
+      let day, month, year;
+      if (/^\d+$/.test(match[1])) {
+        day = parseInt(match[1], 10);
+        month = MONTH_ABBREV_MAP[match[2].toLowerCase()];
+        year = parseInt(match[3], 10);
+      } else {
+        month = MONTH_ABBREV_MAP[match[1].toLowerCase()];
+        day = parseInt(match[2], 10);
+        year = parseInt(match[3], 10);
+      }
+      if (year < 100) {
+        year = 2000 + year;
+      }
+      if (
+        isValidDate(year, month, day) &&
+        (!expectedYear || year === expectedYear) &&
+        (!expectedMonth || month === expectedMonth)
+      ) {
+        return { year, month, day };
+      }
     }
   }
 
