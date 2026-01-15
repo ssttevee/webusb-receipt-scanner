@@ -658,17 +658,37 @@ downloadPdfBtn.addEventListener("click", async () => {
       })),
     );
 
-    const filename = `${downloadFilename.value || Date.now()}.pdf`;
+    const filename = `${downloadFilename.value || Date.now()}`;
+    const ext = ".pdf";
+    let suffix = "";
 
     let fileHandle;
     if (downloadFilename.value && autoSaveFolderHandle.value) {
-      fileHandle = await autoSaveFolderHandle.value.getFileHandle(filename, {
-        create: true,
-      });
+      let counter = 0;
+      while (true) {
+        try {
+          await autoSaveFolderHandle.value.getFileHandle(
+            filename + suffix + ext,
+            {
+              create: false,
+            },
+          );
+          suffix = `-${++counter}`;
+        } catch {
+          break;
+        }
+      }
+
+      fileHandle = await autoSaveFolderHandle.value.getFileHandle(
+        filename + suffix + ext,
+        {
+          create: true,
+        },
+      );
     } else if ("showSaveFilePicker" in window) {
       try {
         fileHandle = await window.showSaveFilePicker({
-          suggestedName: filename,
+          suggestedName: filename + suffix + ext,
           types: [
             {
               description: "PDF files",
@@ -700,7 +720,7 @@ downloadPdfBtn.addEventListener("click", async () => {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = filename;
+      a.download = filename + suffix + ext;
       a.click();
       URL.revokeObjectURL(url);
 
