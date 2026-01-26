@@ -499,6 +499,14 @@
             </div>
         </div>
 
-        <script type="module" src="app.mjs"></script>
+        <script type="module">
+            (await import("app.mjs")).initApp({
+                sane: {
+                    sane: {
+                        loaderURL: "/build",
+                    },
+                },
+            });
+        </script>
     </body>
 </html>
