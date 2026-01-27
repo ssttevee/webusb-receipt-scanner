@@ -1,18 +1,14 @@
-import {
-  batch,
-  computed,
-  effect,
-  signal,
-} from "https://esm.sh/@preact/signals";
+import * as signals from "https://esm.sh/@preact/signals";
 import * as Comlink from "https://esm.sh/comlink@4.4.1";
-import { create1BitImagePDF } from "./pdf.mjs";
-import getScanner from "./scanner.mjs";
 import {
-  initOCR,
-  recognizeText,
-  parseDateTime,
   formatDateForFilename,
+  initOCR,
+  parseDateTime,
+  recognizeText,
 } from "./ocr.mjs";
+import getScanner from "./scanner.mjs";
+
+const { batch, computed, effect, signal } = signals;
 
 export async function initApp(options) {
   const scanner = await getScanner(options?.sane);
@@ -29,14 +25,11 @@ export async function initApp(options) {
   const pagesList = document.getElementById("pagesList");
   const pageCount = document.getElementById("pageCount");
   const clearPagesBtn = document.getElementById("clearPagesBtn");
-  const downloadFilename = document.getElementById("downloadFilename");
   const downloadPdfBtn = document.getElementById("downloadPdfBtn");
-  const selectFolderBtn = document.getElementById("selectFolderBtn");
   const expectedYear = document.getElementById("expectedYear");
   const expectedMonth = document.getElementById("expectedMonth");
   const selectionOverlay = document.getElementById("selectionOverlay");
   const selectionBox = document.getElementById("selectionBox");
-  const folderName = document.getElementById("folderName");
 
   // Control elements
   function setupControlSignal(sliderId) {
@@ -184,14 +177,11 @@ export async function initApp(options) {
       pagesList,
       pageCount,
       clearPagesBtn,
-      downloadFilename,
       downloadPdfBtn,
-      selectFolderBtn,
       expectedYear,
       expectedMonth,
       selectionOverlay,
       selectionBox,
-      folderName,
     },
     state: {
       binarizeThreshold,
@@ -211,6 +201,7 @@ export async function initApp(options) {
       isScanning,
       processingOptions,
     },
+    showStatus,
   };
 
   /* -------------------------------------------------
@@ -697,100 +688,9 @@ export async function initApp(options) {
   /* -------------------------------------------------
    * PDF generation
    * ------------------------------------------------- */
-  async function defaultOnCompleteBehaviour() {
-    showStatus(`Generating PDF with ${scannedPages.length} page(s)...`, "info");
-
-    const pdfData = await create1BitImagePDF(
-      scannedPages.map((page) => ({
-        data: page.packedImage,
-        width: page.previewImageData.width,
-        height: page.previewImageData.height,
-      })),
-    );
-
-    const filename = `${downloadFilename.value || Date.now()}`;
-    const ext = ".pdf";
-    let suffix = "";
-
-    let fileHandle;
-    if (downloadFilename.value && autoSaveFolderHandle.value) {
-      let counter = 0;
-      while (true) {
-        try {
-          await autoSaveFolderHandle.value.getFileHandle(
-            filename + suffix + ext,
-            {
-              create: false,
-            },
-          );
-          suffix = `-${++counter}`;
-        } catch {
-          break;
-        }
-      }
-
-      fileHandle = await autoSaveFolderHandle.value.getFileHandle(
-        filename + suffix + ext,
-        {
-          create: true,
-        },
-      );
-    } else if ("showSaveFilePicker" in window) {
-      try {
-        fileHandle = await window.showSaveFilePicker({
-          suggestedName: filename + suffix + ext,
-          types: [
-            {
-              description: "PDF files",
-              accept: { "application/pdf": [".pdf"] },
-            },
-          ],
-        });
-      } catch (error) {
-        if (error.name !== "AbortError") {
-          throw error;
-        } else {
-          showStatus("Save cancelled by user", "info");
-          return;
-        }
-      }
-    }
-
-    if (fileHandle) {
-      const writable = await fileHandle.createWritable();
-      await writable.write(pdfData);
-      await writable.close();
-
-      showStatus(
-        `PDF saved successfully with ${scannedPages.length} page(s)`,
-        "success",
-      );
-    } else {
-      const blob = new Blob([pdfData], { type: "application/pdf" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = filename + suffix + ext;
-      a.click();
-      URL.revokeObjectURL(url);
-
-      showStatus(
-        `PDF downloaded with ${scannedPages.length} page(s)`,
-        "success",
-      );
-    }
-
-    batch(() => {
-      pages.value = [];
-      currentPageIndex.value = -1;
-    });
-
-    downloadFilename.value = "";
-  }
 
   downloadPdfBtn.addEventListener("click", async () => {
-    const scannedPages = pages.value;
-    if (scannedPages.length === 0) return;
+    if (pages.value.length === 0) return;
 
     try {
       downloadPdfBtn.disabled = true;
@@ -799,24 +699,8 @@ export async function initApp(options) {
       console.error("PDF generation failed:", error);
       showStatus(`PDF generation failed: ${error.message}`, "error");
     } finally {
-      downloadPdfBtn.disabled = scannedPages.length === 0;
+      downloadPdfBtn.disabled = pages.value.length === 0;
     }
-  });
-
-  selectFolderBtn.addEventListener("click", async () => {
-    try {
-      autoSaveFolderHandle.value = await window.showDirectoryPicker({
-        id: "auto-save-to-folder",
-        mode: "readwrite",
-      });
-    } catch (error) {
-      console.error("Folder selection failed:", error);
-      showStatus(`Folder selection failed: ${error.message}`, "error");
-    }
-  });
-
-  effect(() => {
-    folderName.textContent = autoSaveFolderHandle.value?.name;
   });
 
   effect(() => {
@@ -835,3 +719,6 @@ export async function initApp(options) {
     showStatus("Ready to connect scanner", "info");
   }
 }
+
+export { create1BitImagePDF } from "./pdf.mjs";
+export { signals };

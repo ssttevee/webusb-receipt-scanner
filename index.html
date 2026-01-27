@@ -500,11 +500,136 @@
         </div>
 
         <script type="module">
-            (await import("app.mjs")).initApp({
+            import { create1BitImagePDF, initApp, signals } from "./app.mjs";
+
+            const downloadFilename =
+                document.getElementById("downloadFilename");
+            const selectFolderBtn = document.getElementById("selectFolderBtn");
+            const folderName = document.getElementById("folderName");
+
+            const autoSaveFolderHandle = signals.signal(null);
+
+            selectFolderBtn.addEventListener("click", async () => {
+                try {
+                    autoSaveFolderHandle.value =
+                        await window.showDirectoryPicker({
+                            id: "auto-save-to-folder",
+                            mode: "readwrite",
+                        });
+                } catch (error) {
+                    console.error("Folder selection failed:", error);
+                    showStatus(
+                        `Folder selection failed: ${error.message}`,
+                        "error",
+                    );
+                }
+            });
+
+            signals.effect(() => {
+                folderName.textContent = autoSaveFolderHandle.value?.name;
+            });
+
+            initApp({
+                async onComplete({ signals, showStatus }) {
+                    const scannedPages = signals.pages.value;
+
+                    showStatus(
+                        `Generating PDF with ${scannedPages.length} page(s)...`,
+                        "info",
+                    );
+
+                    const pdfData = await create1BitImagePDF(
+                        scannedPages.map((page) => ({
+                            data: page.packedImage,
+                            width: page.previewImageData.width,
+                            height: page.previewImageData.height,
+                        })),
+                    );
+
+                    const filename = `${downloadFilename.value || Date.now()}`;
+                    const ext = ".pdf";
+                    let suffix = "";
+
+                    let fileHandle;
+                    if (downloadFilename.value && autoSaveFolderHandle.value) {
+                        let counter = 0;
+                        while (true) {
+                            try {
+                                await autoSaveFolderHandle.value.getFileHandle(
+                                    filename + suffix + ext,
+                                    {
+                                        create: false,
+                                    },
+                                );
+                                suffix = `-${++counter}`;
+                            } catch {
+                                break;
+                            }
+                        }
+
+                        fileHandle =
+                            await autoSaveFolderHandle.value.getFileHandle(
+                                filename + suffix + ext,
+                                {
+                                    create: true,
+                                },
+                            );
+                    } else if ("showSaveFilePicker" in window) {
+                        try {
+                            fileHandle = await window.showSaveFilePicker({
+                                suggestedName: filename + suffix + ext,
+                                types: [
+                                    {
+                                        description: "PDF files",
+                                        accept: { "application/pdf": [".pdf"] },
+                                    },
+                                ],
+                            });
+                        } catch (error) {
+                            if (error.name !== "AbortError") {
+                                throw error;
+                            } else {
+                                showStatus("Save cancelled by user", "info");
+                                return;
+                            }
+                        }
+                    }
+
+                    if (fileHandle) {
+                        const writable = await fileHandle.createWritable();
+                        await writable.write(pdfData);
+                        await writable.close();
+
+                        showStatus(
+                            `PDF saved successfully with ${scannedPages.length} page(s)`,
+                            "success",
+                        );
+                    } else {
+                        const blob = new Blob([pdfData], {
+                            type: "application/pdf",
+                        });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement("a");
+                        a.href = url;
+                        a.download = filename + suffix + ext;
+                        a.click();
+                        URL.revokeObjectURL(url);
+
+                        showStatus(
+                            `PDF downloaded with ${scannedPages.length} page(s)`,
+                            "success",
+                        );
+                    }
+
+                    batch(() => {
+                        pages.value = [];
+                        currentPageIndex.value = -1;
+                    });
+
+                    downloadFilename.value = "";
+                },
                 sane: {
-                    sane: {
-                        loaderURL: "/build",
-                    },
+                    sane: {},
                 },
             });
         </script>
