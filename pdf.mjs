@@ -1,3 +1,19 @@
+const haveCompression = typeof CompressionStream !== "undefined";
+
+async function flate(u8, doCompress) {
+  if (!doCompress || !haveCompression) {
+    return { bytes: u8, filtered: false };
+  }
+  return {
+    bytes: new Uint8Array(
+      await new Response(
+        new Blob([u8]).stream().pipeThrough(new CompressionStream("deflate")),
+      ).arrayBuffer(),
+    ),
+    filtered: true,
+  };
+}
+
 export async function create1BitImagePDF(
   images,
   { compressImages = true, compressContents = true } = {},
@@ -27,20 +43,6 @@ export async function create1BitImagePDF(
       );
     }
   });
-
-  const haveCompression = typeof CompressionStream !== "undefined";
-
-  async function flate(u8, doCompress) {
-    if (!doCompress || !haveCompression) {
-      return { bytes: u8, filtered: false };
-    }
-    const compressed = new Uint8Array(
-      await new Response(
-        new Blob([u8]).stream().pipeThrough(new CompressionStream("deflate")),
-      ).arrayBuffer(),
-    );
-    return { bytes: compressed, filtered: true };
-  }
 
   const encoder = new TextEncoder();
   const parts = [];
