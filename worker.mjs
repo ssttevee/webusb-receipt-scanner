@@ -44,7 +44,13 @@ const api = {
     if (!im) throw new Error(`Image ${imageId} not found`);
 
     // Process the image with the given options
-    const processed = processImage(im, options);
+    let processed;
+    try {
+      processed = processImage(im, options);
+    } catch (error) {
+      console.log(typeof error);
+      throw new Error(`Failed to process image: ${error.message}`, { cause: error });
+    }
 
     try {
       // Convert processed image back to ImageData for preview
@@ -57,6 +63,8 @@ const api = {
         previewImageData: matToImageData(processed),
         packedData,
       };
+    } catch (error) {
+      throw new Error(`Failed to pack image: ${error.message}`, { cause: error });
     } finally {
       processed.delete();
     }

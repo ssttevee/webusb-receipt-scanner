@@ -15,6 +15,10 @@ function trimBottom(img) {
     bottom -= 1;
   }
 
+  if (!bottom) {
+    bottom = img.rows;
+  }
+
   return img.roi(new cv.Rect(0, 0, img.cols, bottom));
 }
 
@@ -39,17 +43,27 @@ function trimRight(img, options = undefined) {
 function binarize(img, options = undefined) {
   const gray = new cv.Mat();
   try {
-    cv.cvtColor(img, gray, cv.COLOR_BGR2GRAY);
+    try {
+      cv.cvtColor(img, gray, cv.COLOR_BGR2GRAY);
+    } catch (cause) {
+      throw new Error(`Failed to convert color: ${cause?.message ?? cause}`, { cause });
+    }
+
     const out = new cv.Mat();
-    cv.adaptiveThreshold(
-      gray,
-      out,
-      255,
-      cv.ADAPTIVE_THRESH_MEAN_C,
-      cv.THRESH_BINARY,
-      options?.blockSize ?? 199,
-      options?.threshold ?? 60,
-    );
+    try {
+      cv.adaptiveThreshold(
+        gray,
+        out,
+        255,
+        cv.ADAPTIVE_THRESH_MEAN_C,
+        cv.THRESH_BINARY,
+        options?.blockSize ?? 199,
+        options?.threshold ?? 60,
+      );
+    } catch (cause) {
+      gray.delete();
+      throw new Error(`Failed to adaptive threshold: ${cause?.message ?? cause}`, { cause });
+    }
     return out;
   } finally {
     gray.delete();
@@ -73,18 +87,40 @@ function fillCorners(img) {
 }
 
 export function processImage(img, options = undefined) {
-  const a = trimBottom(img);
+  let a;
   try {
-    const b = trimRight(a, {
-      threshold: options?.trimRightThreshold,
-      max: options?.trimRightMax,
-    });
+    a = trimBottom(img);
+  } catch (cause) {
+    throw new Error(`Failed to trim bottom: ${cause?.message ?? cause}`, { cause });
+  }
+
+  try {
+    let b;
     try {
-      const c = binarize(b, {
-        blockSize: options?.binarizeBlockSize,
-        threshold: options?.binarizeThreshold,
+      b = trimRight(a, {
+        threshold: options?.trimRightThreshold,
+        max: options?.trimRightMax,
       });
-      fillCorners(c);
+    } catch (cause) {
+      throw new Error(`Failed to trim right: ${cause?.message ?? cause}`, { cause });
+    }
+
+    try {
+      let c;
+      try {
+        c = binarize(b, {
+          blockSize: options?.binarizeBlockSize,
+          threshold: options?.binarizeThreshold,
+        });
+      } catch (cause) {
+        throw new Error(`Failed to binarize: ${cause?.message ?? cause}`, { cause });
+      }
+
+      try {
+        fillCorners(c);
+      } catch (cause) {
+        throw new Error(`Failed to fill corners: ${cause?.message ?? cause}`, { cause });
+      }
       return c;
     } finally {
       b.delete();

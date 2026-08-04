@@ -217,6 +217,47 @@ export async function initApp(options) {
 		selectionOverlay.style.display = dateSelection.value ? "block" : "none";
 	});
 
+	window.addEventListener("dragover", (event) => event.preventDefault());
+	window.addEventListener("drop", (event) => {
+		for (const file of Array.from(event.dataTransfer.files)) {
+			event.preventDefault();
+
+			(async () => {
+				const objectUrl = URL.createObjectURL(file);
+				try {
+					const image = await new Promise((resolve, reject) => {
+						const img = new Image();
+						img.onload = () => resolve(img);
+						img.onerror = () => reject(new Error("failed to load image"));
+						img.src = objectUrl;
+					});
+
+					const canvas = new OffscreenCanvas(image.width, image.height);
+					const ctx = canvas.getContext("2d");
+					ctx.drawImage(image, 0, 0);
+
+					batch(() => {
+						pages.value = [
+							...pages.value,
+							{
+								originalImageData: ctx.getImageData(
+									0,
+									0,
+									image.width,
+									image.height,
+								),
+								options: defaultProcessingOptions,
+							},
+						];
+						currentPageIndex.value = pages.value.length - 1;
+					});
+				} finally {
+					URL.revokeObjectURL(objectUrl);
+				}
+			})();
+		}
+	});
+
 	processedCanvas.addEventListener("mousedown", (e) => {
 		const rect = processedCanvas.getBoundingClientRect();
 		const scaleX = processedCanvas.width / rect.width;
@@ -452,8 +493,14 @@ export async function initApp(options) {
 	async function processImageData(imageData, options) {
 		let imageId = imageDataRegistry.get(imageData);
 		if (!imageId) {
-			imageId = await workerApi.registerImage(imageData);
-			imageDataRegistry.set(imageData, imageId);
+			try {
+				imageId = await workerApi.registerImage(imageData);
+				imageDataRegistry.set(imageData, imageId);
+			} catch (error) {
+				throw new Error(`failed to register image: ${error.message}`, {
+					cause: error,
+				});
+			}
 		}
 
 		return await workerApi.processImageData(imageId, options);
