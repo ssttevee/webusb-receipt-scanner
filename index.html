@@ -1,5 +1,5 @@
 <!doctype html>
-<html>
+<html lang="en-CA">
     <head>
         <title>Receipt Scanner</title>
         <meta charset="utf-8" />
@@ -500,7 +500,7 @@
         </div>
 
         <script type="module">
-            import { create1BitImagePDF, initApp, signals } from "./app.mjs";
+            import { create1BitImagePDF, formatDateForFilename, initApp, signals } from "./app.mjs";
 
             const downloadFilename =
                 document.getElementById("downloadFilename");
@@ -529,9 +529,9 @@
                 folderName.textContent = autoSaveFolderHandle.value?.name;
             });
 
-            initApp({
-                async onComplete({ signals, showStatus }) {
-                    const scannedPages = signals.pages.value;
+            const context = await initApp({
+                async onComplete({ state, showStatus }) {
+                  const scannedPages = state.pages.value;
 
                     showStatus(
                         `Generating PDF with ${scannedPages.length} page(s)...`,
@@ -621,9 +621,9 @@
                         );
                     }
 
-                    batch(() => {
-                        pages.value = [];
-                        currentPageIndex.value = -1;
+                    signals.batch(() => {
+                        state.pages.value = [];
+                        state.currentPageIndex.value = -1;
                     });
 
                     downloadFilename.value = "";
@@ -631,6 +631,15 @@
                 sane: {
                     sane: {},
                 },
+            });
+
+            signals.effect(() => {
+                console.log(context.state.detectedDate.value);
+                if (!context.state.detectedDate.value) {
+                    return;
+                }
+
+                downloadFilename.value = formatDateForFilename(context.state.detectedDate.value);
             });
         </script>
     </body>
