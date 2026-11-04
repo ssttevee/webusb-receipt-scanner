@@ -1,0 +1,17 @@
+*
+!Dockerfile
+!requirements.lock
+!package.json
+!package-lock.json
+!raw-scanner.mjs
+!server/
+!server/*.py
+!web/
+!web/index.html
+!web/vite.config.mts
+!web/tsconfig.json
+!web/src/
+!web/src/*
+!scanner-driver/
+!scanner-driver/build/
+!scanner-driver/build/*

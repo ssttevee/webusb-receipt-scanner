@@ -1,0 +1,194 @@
+diff --git a/backend/epsonds-cmd.c b/backend/epsonds-cmd.c
+--- a/backend/epsonds-cmd.c
++++ b/backend/epsonds-cmd.c
+@@ -465,6 +465,8 @@ static SANE_Status info_cb(void *userdata, char *token, int len)
+ 				int max = decode_value(value + 4 + 8, 8);
+ 
+ 				DBG(1, "     ADF: max %dx%d @ 100dpi\n", min, max);
++				if (min > 0 && max > 0 && max <= 10000)
++					s->hw->adf_long_y_range.max = SANE_FIX(max * MM_PER_INCH / 100);
+ 			}
+ 		}
+ 
+@@ -493,6 +495,8 @@ static SANE_Status info_cb(void *userdata, char *token, int len)
+ 				int max = decode_value(value + 4 + 4, 8);
+ 
+ 				DBG(1, "     ADF: max %dx%d @ 100dpi\n", min, max);
++				if (min > 0 && max > 0 && max <= 10000)
++					s->hw->adf_long_y_range.max = SANE_FIX(max * MM_PER_INCH / 100);
+ 			}
+ 		}
+ 
+@@ -661,6 +665,7 @@ static SANE_Status capa_cb(void *userdata, char *token, int len)
+ 
+ 		if (strncmp("ADFPEDT", token, 3 + 4) == 0) {
+ 			DBG(1, "     ADF: paper end detection\n");
++			s->hw->adf_has_pedt = SANE_TRUE;
+ 		}
+ 
+ 		if (strncmp("ADFLOAD", token, 3 + 4) == 0) {
+diff --git a/backend/epsonds-jpeg.c b/backend/epsonds-jpeg.c
+--- a/backend/epsonds-jpeg.c
++++ b/backend/epsonds-jpeg.c
+@@ -211,7 +211,7 @@ void eds_decode_jpeg(epsonds_scanner*s, SANE_Byte *data, SANE_Int size, ring_buf
+ 		}
+ 
+ 		// if not auto crop mode padding to lines
+-		if (s->val[OPT_ADF_CRP].w == 0)
++		if (s->val[OPT_ADF_CRP].w == 0 && !s->val[OPT_LONG_PAPER].w)
+ 		{
+ 			unsigned char* padding = malloc(s->params.bytes_per_line);
+ 			memset(padding, 255, s->params.bytes_per_line);
+diff --git a/backend/epsonds.c b/backend/epsonds.c
+--- a/backend/epsonds.c
++++ b/backend/epsonds.c
+@@ -2072,6 +2072,14 @@ init_options(epsonds_scanner *s)
+ 	s->opt[OPT_ADF_CRP].type = SANE_TYPE_BOOL;
+ 	s->val[OPT_ADF_CRP].w = 0;
+ 
++	/* Long mode expands only the acquisition height, without width cropping. */
++	s->opt[OPT_LONG_PAPER].name = "long-paper";
++	s->opt[OPT_LONG_PAPER].title = SANE_I18N("Long paper");
++	s->opt[OPT_LONG_PAPER].desc = SANE_I18N("Use advertised ADF maximum height and actual page-end height at 300 dpi or less");
++	s->opt[OPT_LONG_PAPER].type = SANE_TYPE_BOOL;
++	s->val[OPT_LONG_PAPER].w = 0;
++	if (!s->hw->has_adf || s->hw->adf_long_y_range.max <= s->hw->adf_y_range.max)
++		s->opt[OPT_LONG_PAPER].cap |= SANE_CAP_INACTIVE;
+ 
+ 	if (!s->hw->adf_has_skew)
+ 	{
+@@ -2216,7 +2224,8 @@ change_source(epsonds_scanner *s, SANE_Int optindex, char *value)
+ 
+ 	if (strcmp(STRING_ADFFRONT, value) == 0 || strcmp(STRING_ADFDUPLEX, value) == 0) {
+ 		s->hw->x_range = &s->hw->adf_x_range;
+-		s->hw->y_range = &s->hw->adf_y_range;
++		s->hw->y_range = s->val[OPT_LONG_PAPER].w
++			? &s->hw->adf_long_y_range : &s->hw->adf_y_range;
+ 		s->hw->alignment = s->hw->adf_alignment;
+ 
+ 
+@@ -2235,6 +2244,8 @@ change_source(epsonds_scanner *s, SANE_Int optindex, char *value)
+ 
+ 	s->opt[OPT_BR_X].constraint.range = s->hw->x_range;
+ 	s->opt[OPT_BR_Y].constraint.range = s->hw->y_range;
++	s->opt[OPT_TL_X].constraint.range = s->hw->x_range;
++	s->opt[OPT_TL_Y].constraint.range = s->hw->y_range;
+ 
+ 	if (s->val[OPT_TL_X].w < s->hw->x_range->min || force_max)
+ 		s->val[OPT_TL_X].w = s->hw->x_range->min;
+@@ -2269,6 +2280,7 @@ getvalue(SANE_Handle handle, SANE_Int option, void *value)
+ 	case OPT_DEPTH:
+ 	case OPT_ADF_SKEW:
+ 	case OPT_ADF_CRP:
++	case OPT_LONG_PAPER:
+ 		*((SANE_Word *) value) = sval->w;
+ 		break;
+ 
+@@ -2322,9 +2334,29 @@ setvalue(SANE_Handle handle, SANE_Int option, void *value, SANE_Int *info)
+ 
+ 	switch (option) {
+ 
++	case OPT_LONG_PAPER:
++		if (strcmp(source_list[s->val[OPT_SOURCE].w], STRING_ADFFRONT) != 0 ||
++		    (*((SANE_Word *)value) && s->val[OPT_RESOLUTION].w > 300))
++			return SANE_STATUS_INVAL;
++		sval->w = *((SANE_Word *)value);
++		if (sval->w) {
++			s->val[OPT_ADF_SKEW].w = 0;
++			s->val[OPT_ADF_CRP].w = 0;
++		}
++		change_source(s, s->val[OPT_SOURCE].w, (char *)source_list[s->val[OPT_SOURCE].w]);
++		/* Explicit long-mode selection resets height to the new range maximum. */
++		s->val[OPT_TL_Y].w = 0;
++		s->val[OPT_BR_Y].w = s->hw->y_range->max;
++		reload = SANE_TRUE;
++		break;
++
+ 	case OPT_ADF_SKEW:
+ 	case OPT_RESOLUTION:
+ 	case OPT_ADF_CRP:
++		if (s->val[OPT_LONG_PAPER].w &&
++		    ((option == OPT_RESOLUTION && *((SANE_Word *)value) > 300) ||
++		     (option != OPT_RESOLUTION && *((SANE_Word *)value))))
++			return SANE_STATUS_INVAL;
+ 		sval->w = *((SANE_Word *) value);
+ 		reload = SANE_TRUE;
+ 		break;
+@@ -2364,6 +2396,8 @@ setvalue(SANE_Handle handle, SANE_Int option, void *value, SANE_Int *info)
+ 		break;
+ 
+ 	case OPT_SOURCE:
++		if (strcmp((char *)value, STRING_ADFFRONT) != 0)
++			s->val[OPT_LONG_PAPER].w = SANE_FALSE;
+ 		change_source(s, optindex, (char *) value);
+ 		reload = SANE_TRUE;
+ 		break;
+@@ -2651,6 +2685,17 @@ sane_get_parameters(SANE_Handle handle, SANE_Parameters *params)
+ 
+ 	status = get_next_image(s);
+ 
++	if (status != SANE_STATUS_GOOD)
++		return status;
++	if (s->val[OPT_LONG_PAPER].w) {
++		/* A long scan must end with a valid physical page-end height. */
++		if (s->height_front <= 0 || s->height_front > s->params.lines)
++			return SANE_STATUS_IO_ERROR;
++		s->params.lines = s->height_front;
++		if (params != NULL) *params = s->params;
++		return SANE_STATUS_GOOD;
++	}
++
+ 	// if size auto, update page size value
+ 	if(s->val[OPT_ADF_CRP].w)
+ 	{
+@@ -2898,10 +2943,11 @@ sane_start(SANE_Handle handle)
+ 
+ 		SANE_Int duplexMode = (strcmp(source_list[s->val[OPT_SOURCE].w], STRING_ADFDUPLEX) == 0);
+ 
+-		sprintf(buf, "#ADF%s%s%s",
++		sprintf(buf, "#ADF%s%s%s%s",
+ 		duplexMode ? "DPLX" : "",
+ 		s->val[OPT_ADF_SKEW].w ? "SKEW" : "",
+-		s->val[OPT_ADF_CRP].w ? "CRP " : ""
++		s->val[OPT_ADF_CRP].w ? "CRP " : "",
++		(s->val[OPT_LONG_PAPER].w && s->hw->adf_has_pedt) ? "PEDT" : ""
+ 		);
+ 
+ 		if (duplexMode)
+@@ -3506,7 +3552,15 @@ acquire_raw_data(epsonds_scanner* s)
+ 	}
+ 
+ 
+-	int needBytes =  (s->params.bytes_per_line + s->dummy) * s->params.lines;
++	int needBytes = (s->params.bytes_per_line + s->dummy) *
++		(s->val[OPT_LONG_PAPER].w ? s->height_front : s->params.lines);
++	if (s->val[OPT_LONG_PAPER].w) {
++		/* Never manufacture rows to make an incomplete long scan look whole. */
++		if (s->height_front <= 0 || s->height_front > s->params.lines ||
++		    eds_ring_avail(&s->front) != needBytes)
++			return SANE_STATUS_IO_ERROR;
++		return SANE_STATUS_GOOD;
++	}
+ 	{
+ 		int available = eds_ring_avail(&s->front);
+ 		if (available < needBytes)
+diff --git a/backend/epsonds.h b/backend/epsonds.h
+--- a/backend/epsonds.h
++++ b/backend/epsonds.h
+@@ -87,6 +87,7 @@ enum {
+ 	OPT_LOAD,
+ 	OPT_ADF_SKEW,
+ 	OPT_ADF_CRP,
++	OPT_LONG_PAPER,
+ 	NUM_OPTIONS
+ };
+ 
+@@ -134,6 +135,8 @@ struct epsonds_device
+ 	SANE_Bool has_adf;		/* adf */
+ 	SANE_Range adf_x_range;	        /* x range */
+ 	SANE_Range adf_y_range;	        /* y range */
++	SANE_Range adf_long_y_range;      /* advertised AMAX height */
++	SANE_Bool adf_has_pedt;           /* supports paper-end detection */
+ 	SANE_Bool adf_is_duplex;	/* supports duplex mode */
+ 	SANE_Bool adf_singlepass;	/* supports single pass duplex */
+ 	SANE_Bool adf_has_skew;		/* supports skew correction */

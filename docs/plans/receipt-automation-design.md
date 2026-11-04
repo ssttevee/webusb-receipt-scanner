@@ -3,6 +3,7 @@
 Status: Proposed, subject to hardware and sample tests.
 Parent: [Epic](receipt-automation-epic.md)
 Tasks: [Work items](receipt-automation-work-items.md)
+Stack and confirmed constraints: [Concrete architecture](receipt-automation-architecture.md)
 
 ## 1. System boundary
 
@@ -54,7 +55,9 @@ Start with one application service, a bounded worker pool, a durable database-ba
 
 SQLite plus files is a proposed choice. Verify locking and durability on the actual NAS volume. Do not put SQLite on an unsupported network filesystem. Choose a server database if needed.
 
-Select the server language after RA-04 and RA-05. JavaScript can reuse interface code; Python can simplify access to OpenCV and OCR tools. Do not move the Python scanner script to the NAS.
+Propose Python 3.12/FastAPI for the API and CPU processing, TypeScript/Preact for the browser, and SQLite jobs plus files. Use one application container behind existing Caddy/Authelia; no application login system. RA-04 and RA-05 verify deployment and OCR performance. Do not move the Python scanner script to the NAS.
+
+The target is an i5-12500H with 64 GB RAM, no GPU, and Unraid 7.2.0; typical sessions have 30–40 receipts. Enqueue one job immediately after each durable capture receive; warm OCR engines rather than waiting for a batch. Deliver a runnable amd64 image and its port/volume/environment contract. NAS/proxy configuration belongs to the user. The raw sample collector runs separately on the workstation without Docker.
 
 ## 3. Documents, groups, and evidence
 
@@ -75,16 +78,18 @@ A capture is a scanned page. A document is an itemized receipt, payment receipt,
 
 Capture time is not purchase time. Preserve each document's date separately. A return does not change the original purchase date or imply a negative original total. Do not invent a timezone from the NAS timezone.
 
+If a receipt contains several transaction timestamps, its canonical timestamp is the earliest supported complete date/time, regardless of whether it came from the payment terminal or cash register. Associate dates/times using source context and compare complete timestamps; do not mix a date from one candidate with a clock time from another. Retain every candidate and its source evidence. Multiple genuine printed timestamps do not by themselves imply extraction ambiguity; unresolved parses or associations still require review.
+
 A rescan adds a capture and invalidates affected results. Exact transfer retries are duplicate requests. Separate purchases with the same amount and date are not necessarily duplicate receipts.
 
 ### Automatic grouping
 
-Use evidence such as merchant, transaction/reference number, terminal approval code, date/time, currency, amount, and explicit original-sale references. Receipt type determines which evidence is useful. Scan order alone is insufficient.
+Use extracted transaction date and time as sufficient evidence for proposed grouping. Combine same-calendar-date/same-minute receipts by default unless clear vendor evidence vetoes the merge. Merchant/header/layout information can supply that veto without requiring a normalized vendor name; absent vendor evidence permits the timestamp merge. Amount, currency, item, and transaction-reference extraction are deferred.
 
-- Itemized plus payment: compare transaction identity and totals, with a tested tolerance for time and payment adjustments.
-- Original plus return: prefer an explicit original-sale reference. Dates and amounts can differ; returns can be partial or repeated.
+- Itemized plus payment: exact printed-minute matching is the default. Preserve seconds, but differing seconds within the minute do not prevent grouping. Cross-minute tolerance is an optional later experiment.
+- Original plus return: automatically propose a link only when compatible original transaction dates/times are present. Different-time returns use manual combine and naming-source selection; no transaction-reference extraction is required.
 - Missing or conflicting evidence: keep separate or mark the proposed group unclear.
-- Do not join a chain of documents solely because each pair shares a weak feature. Check the complete group's consistency.
+- Check whole-group timestamp and vendor consistency: unknown-vendor pages cannot bridge clearly different vendors. Show the reason and keep manual split available.
 
 Run automatic grouping on staged documents. For a match to an already uploaded original, show a proposed revision with its existing Drive link. Do not silently modify an approved group or upload. Require approval of the revised group; use retained selected images when the old originals no longer exist.
 
@@ -120,7 +125,7 @@ Use levels such as low, medium, and high until labelled tests support a calibrat
 
 Selection alone does not approve a group. The approval action checks the exact membership, fields, page order, selected results, and version shown to the user. Return changed or invalid items to staging with a reason. Report batch success and failure per group. Do not upload unselected items.
 
-Allow explicit acknowledgment of poor readability if the user wishes to keep a poor receipt. Missing required naming fields or unresolved collisions still need a naming decision. Confirmation does not change the recorded machine confidence or prove that every field is correct.
+Allow explicit acknowledgment of poor readability if the user wishes to keep a poor receipt. Required date/time fields must be resolved before approval; missing-time exceptions are not allowed. Separate same-minute groups use the numeric suffix policy and show the reserved path. Confirmation does not change recorded machine confidence.
 
 Approval flow: `staged → approval_preparing → approved → drive_pending → shared`.
 
@@ -173,7 +178,7 @@ Cleanup runs only after the approved record and artifacts exist. It need not wai
 
 Reference checks protect files used by another staged group or pending revision. Cleanup is safe to repeat and records deletion state. Do not promise regeneration of all candidates after an unpinned original is deleted. Retained selected page images support later regrouping and splitting, not full original-based processing.
 
-Backups and NAS snapshots can retain deleted images. Define a bounded expiry for temporary-data backups, include deletion records in restore, and disclose that active-file cleanup is not immediate erasure from all backups. Restore retention state before starting workers. Avoid leaving originals indefinitely in browser caches, export directories, or test folders.
+App-managed backups and backup restore are out of scope. Keep restart-safe retention records and avoid leaving originals indefinitely in browser caches, export directories, or test folders. Application cleanup controls active application files, not user-managed copies.
 
 ## 9. Google Drive path and identity
 
@@ -185,9 +190,11 @@ Example: `2026/09-September/20260914-1721.pdf`.
 
 Use a four-digit year, zero-padded two-digit month/day/hour/minute, 24-hour time, and full English month name. `{date}` is the day of month. Use confirmed transaction fields, not scan time or upload time.
 
-Proposed default for combined receipts: use purchase date/time for itemized/payment groups and original purchase date/time for original/return groups. Retain all return dates separately. Show the path in staging and allow correction. Confirm this default before implementation.
+Confirmed naming rule: use the earliest supported complete transaction timestamp across the group's receipts, including itemized/payment and original/return groups. Compare full dates/times, including seconds where available, before formatting the filename to minute precision. Retain all other timestamps and source evidence separately. Show the selected timestamp, selection reason, and path in staging and allow correction.
 
-If the source date/time is missing or ambiguous, block upload until the user resolves it or approves an explicit naming-policy exception. Do not invent midnight. If unrelated groups have the same path, report the conflict. Do not overwrite, silently add a suffix, or rely on Drive allowing duplicate names. Agree on an exception policy before implementation.
+If the naming date/time is missing or ambiguous, block approval and upload until resolved in staging, with manual time entry if needed. No missing-time exception or invented midnight is permitted. Merge same-minute receipts unless there is clear vendor conflict. If groups cannot merge, reserve the lowest available positive `-{n}` suffix (`-1`, `-2`, etc.), keeping the base file unsuffixed when available. Bind the reserved path to the approved export; reuse it on retries and never renumber prior exports or overwrite another file.
+
+The Drive root is the existing personal-account receipts folder shared with the user's wife. Preserve inherited sharing and check pre-existing year/month filenames when reserving paths; validate OAuth scope visibility for files created outside this application.
 
 Use stable group and export IDs, not filenames, for transfer identity. Store Drive folder and file IDs. Reconcile successful uploads with lost responses before retrying creation. A newly approved return revision can update the existing file according to an explicit update policy; a changed naming date also needs a checked move/rename. Resolve conflicts before replacing the shared copy.
 
@@ -203,11 +210,13 @@ Required versioned API operations:
 - Approve selected group versions and return per-group results.
 - Read procedure history, retry failed jobs, and download approved files.
 
-Use one trusted HTTPS origin for the UI and API. Pin assets and serve them locally where practical, including WASM, workers, and OCR data. Test `Cross-Origin-Opener-Policy: same-origin`, `Cross-Origin-Embedder-Policy: require-corp`, required resource policies, response types, certificates, WebUSB, and `crossOriginIsolated` through the actual NAS proxy.
+Use one trusted HTTPS origin for the final UI and API. Pin and serve assets locally, including WASM, workers, and all five OCR language packs. The image supplies isolation headers and validates MIME types/WebUSB capability; expose diagnostics for user-managed proxy testing. The workstation development server supplies these headers on localhost without Docker.
 
-Keep authentication and Google authorization compatible with opener isolation. Authenticate LAN requests, validate upload limits, and protect state changes against unauthorized request origins. Keep Google tokens on the server. Do not change inherited sharing rules automatically.
+The user configures Caddy/Authelia; no app-specific authentication is required. Document the image's public URL/forwarded-header requirements. Keep Google authorization compatible with opener isolation, validate upload limits, and protect state changes against unauthorized request origins. Keep Google tokens on the server. Do not change inherited sharing rules automatically.
 
-Logs use IDs and safe error codes, not private receipt content. External OCR or LLM requests need a decision on data, retention, region, and cost. Back up retained artifacts, pending work, samples, metadata, and protected credentials. Test restore with workers paused.
+Logs use IDs and safe error codes, not private receipt content. Configure external OCR/LLM data destinations and cost limits. Use OpenRouter by default or an optional Ollama endpoint; new procedure design uses Sol and routine model tasks use Luna/Haiku. Persistent volumes retain artifacts, pending work, samples, metadata, and protected credentials across container recreation; app-managed backup and restore are excluded.
+
+Read the optional OpenRouter credential from `OPENROUTER_API_KEY`. Request it only when the first external integration/test needs it; local sample capture and ordinary local development need no key. The image must run with LLM features disabled if no provider is configured.
 
 ## 11. Measurements and remaining decisions
 
@@ -219,10 +228,10 @@ Remaining decisions:
 
 - Supported browser/OS and verified close/refresh release behavior: RA-02 and RA-06.
 - Exact driver length limit and safe memory limits: RA-03 and RA-07.
-- NAS hardware and isolation setup: RA-04.
+- Docker image runtime contract and measured CPU processing: RA-04; i5-12500H/Unraid 7.2.0/64 GB/no GPU are confirmed and NAS/proxy setup is user-managed.
 - OCR engine and permitted external services: RA-05.
-- Group naming date, missing-time exceptions, and name collisions: RA-16, RA-17, RA-20.
-- Temporary backup expiry and sample retention: RA-18 and RA-21.
+- Retry-safe path reservations: RA-16 and RA-17. Earliest transaction timestamp, mandatory time, same-minute merge/vendor-veto, and numeric suffix policies are confirmed.
+- Sample retention and active-file cleanup: RA-18 and RA-21; app-managed backups are excluded.
 - Confidence thresholds and procedure ranking weights: RA-01, RA-13, RA-22.
 
 First prove capture, staging with manual grouping, selected approval, retention cleanup, and Drive upload. Then add automatic grouping and procedure ranking. Mandatory staging remains the final user check.

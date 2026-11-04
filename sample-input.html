@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Receipt sample inputs</title>
+  <style>
+    :root { color-scheme: light dark; font: 16px system-ui, sans-serif; }
+    body { max-width: 1100px; margin: 2rem auto; padding: 0 1rem; }
+    h1, h2 { line-height: 1.2; }
+    .columns { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
+    fieldset { margin: 1rem 0; padding: 1rem; border: 1px solid #888; border-radius: .5rem; }
+    label { display: block; margin: .7rem 0; }
+    input:not([type=checkbox]), select, textarea { display: block; width: 100%; box-sizing: border-box; padding: .5rem; margin-top: .2rem; }
+    button { padding: .6rem 1rem; margin: .2rem .3rem .2rem 0; cursor: pointer; }
+    #preview { max-width: 100%; max-height: 550px; object-fit: contain; object-position: top; background: white; }
+    #status { padding: .8rem; border: 1px solid #888; overflow-wrap: anywhere; }
+    #status[data-error=true] { border-color: #c33; }
+    .hint { font-size: .9rem; opacity: .85; }
+    @media (max-width: 700px) { .columns { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <h1>Receipt sample inputs</h1>
+  <p>Capture real raw scanner input through WebUSB, label it, and export the original scanner bytes and manifest. This development app runs on your workstation without Docker.</p>
+  <p class="hint">Use desktop Chrome/Edge with the USB-connected Epson scanner. Capture bypasses application cropping, thresholding, and OCR. Defaults are preserved unless you explicitly select the long-paper profile or another DPI; changes are recorded.</p>
+  <p id="status" role="status" aria-live="polite">Ready. Use HTTPS or localhost for browser persistence and checksums.</p>
+  <div class="columns">
+    <section>
+      <fieldset>
+        <legend>1. Original input</legend>
+        <button id="connectScanner" type="button">Connect scanner</button>
+        <button id="startCapture" type="button" disabled>Start capture session</button>
+        <button id="stopCapture" type="button" disabled>Stop capture</button>
+        <button id="disconnectScanner" type="button" disabled>Disconnect</button>
+        <button id="inspectScanner" type="button" disabled>Inspect scanner settings</button>
+        <label><input id="longPaper" type="checkbox"> Long receipt (over 508 mm; patched epsonds driver)</label>
+        <label>Maximum long-receipt length (mm) <input id="scanLength" type="number" min="508" max="1200" value="1200"></label>
+        <label>Scanner DPI <select id="scanDpi"><option value="">Driver default</option><option value="300">300</option><option value="200">200</option><option value="150">150</option></select></label>
+        <p class="hint">Long paper requires 300 DPI or below. The maximum is a capture bound, not a crop to the paper's width. If the scanner advertises a smaller maximum, scanning will not start. Actual long-paper support still requires a physical bottom check.</p>
+        <label><input id="autoDisk" type="checkbox" checked> Save each capture to this workstation's sample folder</label>
+        <p id="scannerStatus" role="status">Scanner disconnected.</p>
+        <p class="hint">Connect once, start a session, then feed receipts. Each raw scan is saved automatically with unlabelled fields. Stop the session to label samples. Stop waits for the current driver operation to return; partial bytes are retained.</p>
+        <details><summary>Raw capture diagnostics and scanner settings</summary><pre id="diagnostics" style="white-space:pre-wrap;overflow-wrap:anywhere">No capture yet.</pre></details>
+        <details><summary>Latest session failure (kept separate from the displayed receipt)</summary><pre id="sessionFailure" style="white-space:pre-wrap;overflow-wrap:anywhere">No session failure.</pre></details>
+        <hr>
+        <label>Import unchanged PNG or TIFF <input id="sourceFile" type="file" accept=".png,.tif,.tiff,image/png,image/tiff"></label>
+        <p class="hint">File import is optional. First-party Epson output is not the raw input source. TIFF bytes are retained even if this browser cannot preview them.</p>
+        <details>
+          <summary>Generate a synthetic input instead</summary>
+          <label>Seed <input id="seed" type="number" value="42" min="0" max="4294967295" step="1"></label>
+          <label>Width (mm) <input id="widthMm" type="number" value="80" min="40" max="216"></label>
+          <label>Length (mm) <input id="lengthMm" type="number" value="1000" min="50" max="1200"></label>
+          <label>DPI <select id="fixtureDpi"><option>150</option><option>200</option><option selected>300</option><option>600</option></select></label>
+          <label>Printed date format <select id="dateFormat"><option value="iso">YYYY-MM-DD</option><option value="dmy">DD/MM/YYYY</option><option value="mdy">MM/DD/YYYY</option><option value="named">Day Month Year</option></select></label>
+          <label>Ink strength (%) <input id="ink" type="number" value="85" min="5" max="100"></label>
+          <label>Noise dots <input id="noise" type="number" value="1000" min="0" max="100000" step="1"></label>
+          <button id="generate" type="button">Generate from labels below</button>
+          <p class="hint">Generator limits: 20 MP, 16,000 rows. Use 300 DPI for metre-long inputs. Font rendering may differ across browsers; the seed and all settings are saved.</p>
+        </details>
+      </fieldset>
+      <fieldset>
+        <legend>2. Expected labels</legend>
+        <label>Expected transaction date <input id="date" type="text" value="2026-09-14" placeholder="YYYY-MM-DD; blank if unresolved"></label>
+        <label>Expected transaction time <input id="time" type="text" value="17:21" placeholder="HH:MM[:SS]; blank if missing"></label>
+        <p class="hint">Multiple transaction timestamps: label the earliest complete date/time, whether from the register or payment terminal. Compare dates and times together; list the other timestamps in Notes.</p>
+        <label>Label state <select id="labelState"><option value="confirmed">Confirmed by a person</option><option value="ambiguous">Ambiguous</option><option value="unreadable">Unreadable</option><option value="missing">Date/time missing</option><option value="unlabelled">Not labelled yet</option></select></label>
+        <label>Expected group ID (same ID for related samples) <input id="groupId" type="text" maxlength="100"></label>
+        <label>Page order within group <input id="pageOrder" type="number" min="1" max="1000" value="1" step="1"></label>
+        <label>Corpus split <select id="split"><option value="development">Development/tuning</option><option value="reserved">Reserved evaluation</option></select></label>
+        <label>Condition tags (comma separated) <input id="tags" type="text" placeholder="faded, skewed, long, multiple-dates"></label>
+        <label>Languages (select all present) <select id="languages" multiple size="5"><option value="eng" selected>English</option><option value="fra">French</option><option value="jpn">Japanese</option><option value="kor">Korean</option><option value="chi_tra">Chinese — traditional</option><option value="chi_sim">Chinese — simplified</option></select></label>
+        <label>Optional source DPI <input id="sourceDpi" type="number" min="1" max="2400" placeholder="If known for an imported scan"></label>
+        <label>Notes / date-region location / alternatives <textarea id="notes" rows="3" maxlength="5000"></textarea></label>
+        <label><input id="unprocessed" type="checkbox"> Imported scan is an unprocessed original (not a final enhanced output)</label>
+        <label><input id="physicalComplete" type="checkbox"> I checked that the physical receipt's bottom is present in this capture</label>
+      </fieldset>
+      <button id="save" type="button" disabled>Save in this browser</button>
+      <button id="saveDisk" type="button" disabled>Save to workstation folder</button>
+      <button id="export" type="button" disabled>Download sample ZIP</button>
+      <p class="hint">Browser storage is not NAS storage and may be cleared. Export the ZIP to retain a sample outside the browser. Sample files and receipt labels belong outside Git.</p>
+    </section>
+    <section>
+      <h2>Input preview</h2>
+      <p id="details">No input selected.</p>
+      <p class="hint">Raw scans have a downsampled display preview. Full-resolution scanner data is <code>original.bin</code> in the ZIP, with row layout, DPI/settings, and completeness diagnostics in <code>manifest.json</code>. EOF alone does not prove that a long receipt's bottom was captured.</p>
+      <img id="preview" alt="Current sample input preview" hidden>
+      <fieldset id="stripControls" hidden>
+        <legend>Full-resolution raw inspection (512-row strips)</legend>
+        <label>Starting row <input id="stripRow" type="number" min="0" value="0" step="512"></label>
+        <button id="showStrip" type="button">Show strip</button>
+        <button id="nextStrip" type="button">Next strip</button>
+        <button id="lastStrip" type="button">Receipt bottom</button>
+        <p class="hint">Scroll horizontally to inspect pixels at 1:1 scale. This display decodes raw pixels without enhancement or full-height canvas allocation.</p>
+        <div style="max-width:100%;overflow:auto"><img id="stripPreview" alt="Full-resolution raw receipt strip" hidden></div>
+      </fieldset>
+      <h2>Saved in this browser</h2>
+      <label>Sample <select id="saved"><option value="">Choose a saved sample</option></select></label>
+      <button id="load" type="button">Load selected</button>
+      <button id="deleteSample" type="button" disabled>Delete selected sample</button>
+      <button id="deleteDiagnostics" type="button" disabled>Delete listed diagnostics</button>
+      <p class="hint"><code>scanner-diagnostic</code> entries contain settings and error details for failed or stopped attempts that returned no image pixels. They help debug the driver and can be deleted when no longer needed.</p>
+      <p class="hint">Delete removes the browser entry and its saved ZIP from this server's workstation sample folder. Delete listed diagnostics affects only listed, zero-image diagnostic entries. Downloaded ZIPs elsewhere remain.</p>
+    </section>
+  </div>
+  <script src="./scanner-assets/libsane.js"></script>
+  <script type="module" src="./sample-input.mjs"></script>
+</body>
+</html>

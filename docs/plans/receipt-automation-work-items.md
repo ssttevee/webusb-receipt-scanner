@@ -2,8 +2,9 @@
 
 Parent: [RA epic](receipt-automation-epic.md)
 Design: [Design and decisions](receipt-automation-design.md)
+Stack and confirmed constraints: [Concrete architecture](receipt-automation-architecture.md)
 
-All items are proposed and not started. All clear and unclear results must enter staging before Drive upload. Only user-approved, selected items or groups can be uploaded. RA-23 is optional and is not a release condition.
+The sample-input utility under RA-01 and a [first application slice](../application-runtime.md) are implemented. The latter covers durable uploads/jobs, reference masters/OCR evidence, manual staging/grouping, approved PDFs/cleanup and an optional Drive adapter; broader acceptance matrices remain open. All clear and unclear results must enter staging before Drive upload. Only user-approved, selected items or groups can be uploaded. RA-23 is optional and is not a release condition.
 
 Size is a planning guide, not a delivery estimate:
 
@@ -15,12 +16,19 @@ Size is a planning guide, not a delivery estimate:
 
 Type: Research and tests. Size: M. Depends on: None.
 
+Progress: [`sample-input.html`](../../sample-input.html) and `sample-server.py` provide direct WebUSB raw capture, defaults/applied-profile diagnostics, browser/workstation saves, date/time/language/group labels, ZIP manifests, and optional image import/synthetic fixtures. See [sample instructions](../sample-capture.md). Stream and local-server tests pass; region annotation and validated baseline evaluation remain. The development app runs without Docker or a NAS connection.
+
+Corpus update: the [expanded sample review](receipt-sample-review-2026-10-25.md) covers 53 real captures, including a complete replacement for the clipped return and saved corrections from both review rounds. All originals pass checksum/row checks, all have physical-bottom confirmations, all labels are now confirmed, and labelled coverage includes every year from 2021–2026 and all five required languages. The severely faded date has user confirmation; missing-time and malformed-source cases remain explicit tests. A reserved split, targeted language/date-notation gaps, and validated extraction benchmarks remain.
+
 Work:
 - Collect permitted samples: clean, faded, damaged, skewed, blank, incomplete, and long receipts.
+- Use the direct-scanner workstation collector for real raw samples; first-party Epson output is not a raw source. Preserve readable backend defaults and record DPI, frame parameters, read/EOF status, and physical-bottom checks. Keep synthetic fixtures separate from real OCR/scanner evaluation.
+- Cover English, French, Japanese, traditional Chinese, and simplified Chinese, including mixed-script receipts and the archive scanned since 2021. Include a 30–40 receipt session.
 - Include new merchants, multiple dates, ambiguous numeric dates, missing years, missing times, filename collisions, and poor scans.
+- Label the earliest supported complete transaction timestamp when a receipt has several; include cash-register/payment-terminal ordering differences, different minutes, differing seconds, and timestamps spanning midnight. Keep the other timestamps as source notes/evidence.
 - Include itemized receipts with payment terminal receipts, original receipts with multiple returns, unrelated similar receipts, and groups with mixed page quality.
 - Keep private receipt images out of public source control and routine logs.
-- Label purchase and return dates, time where visible, expected groups and page order, visible text, image defects, and whether a person can read the receipt.
+- Label purchase and return dates/times, source regions, expected groups and page order, relevant visible text, image defects, and whether a person can read the receipt. Date/time are the only required extracted fields.
 - Keep permitted test samples separate from normal receipt storage. Pin bad sample originals and all procedure results before approval under RA-21.
 - Keep a separate test set that is not used to tune rules or select examples.
 - Record current accuracy, manual actions, processing time, and scanner settings.
@@ -52,6 +60,8 @@ Acceptance:
 
 Type: Research. Size: M. Depends on: None.
 
+Progress: Epson documents a jam above 508 mm without long-paper settings. The pinned epsonds backend discards advertised `AMAX`; an [experimental backend patch](../../scanner-driver/README.md) and collector profile now expose that larger height, use advertised paper-end detection, and preserve actual page-end rows. Compiled-WASM tests with a simulated Epson USB device verify the length-related jam path, successful 1,000 mm data, and missing-row rejection. The [expanded real corpus review](receipt-sample-review-2026-10-25.md) includes complete physical captures at approximately 631, 644 and 881 mm. Physical verification near 1,000 mm and the supported-resolution matrix remain required.
+
 Work:
 - Inspect the exact SANE backend and options included in `sane-wasm@0.5.0`.
 - Compare scan settings and measured output with the Epson application.
@@ -66,23 +76,24 @@ Acceptance:
 - Memory estimates include scanner buffers, RGBA copies, canvases, and transfer encoding.
 - RA-07 has a tested design or an explicit blocker. A larger JavaScript buffer alone is not proof of a driver fix.
 
-## RA-04 — Prove NAS hosting and browser isolation
+## RA-04 — Prove Docker image hosting and browser isolation
 
 Type: Research and deployment test. Size: M. Depends on: None.
 
 Work:
-- Record NAS hardware, storage, container support, and existing proxy constraints.
-- Serve a minimal scan page through a trusted HTTPS hostname on the LAN.
-- Test `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp` through the actual proxy.
+- Record the confirmed i5-12500H, Unraid 7.2.0, 64 GB RAM, no GPU, and below-20% average CPU utilization; measure application throughput on x86 hardware.
+- Define the amd64 image port, volume, environment, health-check, and external-URL contract. NAS/proxy/network/share configuration belongs to the user.
+- Serve the application UI/API/assets from the image; use an isolated localhost server for the workstation development collector.
+- Test image-supplied `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp` headers.
 - Check `crossOriginIsolated`, `SharedArrayBuffer`, WebUSB, workers, WASM, and asset response types.
 - Identify all external modules, OCR language data, WASM, and worker assets. Prefer pinned assets served from the same origin.
-- Test login and the planned Drive authorization flow with opener isolation enabled.
+- Test the planned Drive authorization flow with opener isolation enabled; provide user-facing diagnostics for proxy login/session handling.
 
 Acceptance:
-- A repeatable configuration works from a separate workstation, not only localhost.
+- The image has a repeatable runtime contract and serves its complete application without host-native processing dependencies.
 - The scan driver loads and accesses the scanner without USB access on the NAS.
 - A startup check explains missing HTTPS, headers, APIs, or permission.
-- The report records unsupported browser cases and the required certificate setup.
+- The report records unsupported browser cases and externally supplied HTTPS/proxy requirements without implementing NAS configuration.
 
 ## RA-05 — Compare OCR and receipt extraction options
 
@@ -92,7 +103,8 @@ Work:
 - Compare current Tesseract, a server OCR option, and a suitable local document model where hardware permits.
 - Test an external image/document service only after the user approves data transfer, retention terms, and a cost limit.
 - Test original, grayscale, and selected enhanced images with the same samples.
-- Measure purchase-date accuracy, review rate, runtime, memory, and cost.
+- Measure date/time accuracy, review rate, runtime, memory, and cost. Start with native Tesseract CPU and benchmark RapidOCR/ONNX Runtime as a challenger.
+- Bundle `eng`, `fra`, `jpn`, `chi_tra`, `chi_sim`; measure each language and mixed-script cases. Route language profiles rather than running all five engines on every receipt, and benchmark warm-engine latency.
 - Test multiple date candidates and dates unrelated to the purchase.
 - Keep the engine interface independent of the selected provider.
 
@@ -143,11 +155,13 @@ Acceptance:
 
 Type: Feature. Size: M. Depends on: RA-01, RA-04.
 
+Progress: `server/api.py`, `storage.py` and `models.py` implement chunked/checksummed receive, complete-frame validation, fsynced originals and SQLite WAL receipt/group/job records. Uploads resume after container recreation. See the [runtime contract](../application-runtime.md) for the initial schema and format limits.
+
 Work:
 - Add a receipt API, file storage, schema migrations, and a small database.
 - Store a lossless, unchanged original on disk with checksum, dimensions, resolution, scan settings, and capture time. Keep it until approval and durable approved artifact commit; apply RA-21 cleanup after that point.
 - Keep capture time separate from purchase date. Give receipts stable IDs independent of filenames.
-- Authenticate uploads. Check type, dimensions, byte limits, and available space.
+- Route uploads through Caddy/Authelia; do not add app accounts or login sessions. Check request origin, type, dimensions, byte limits, and available space.
 - Use staged writes and safe finalization. Recover incomplete writes after restart.
 
 Acceptance:
@@ -161,13 +175,15 @@ Acceptance:
 
 Type: Feature. Size: M. Depends on: RA-06, RA-08. Integrate RA-07 before long-scan release.
 
+Progress: the Preact UI retains captures in Dexie/IndexedDB before uploading and deletes transfer copies only after matching durable acknowledgments. Browser checks cover lost acknowledgments/reload, duplicate avoidance and compiled-driver long-frame transfer. Physical USB lifecycle and quota-exhaustion acceptance remain open.
+
 Work:
 - Save complete scans to browser storage before starting transfer where capacity permits.
 - Track local save, upload, NAS acknowledgment, retry, and failure separately.
 - Resume pending uploads after refresh with a stable capture ID and checksum.
 - Request persistent storage where supported. Show storage limits and pending receipt count.
 - Bound capture and transfer concurrency. Pause intake before storage is exhausted.
-- Remove browser transfer copies after verified durable NAS acknowledgment. Track pending deletions for the next browser session; do not depend on unload. RA-21 defines backup and browser deletion limits.
+- Remove browser transfer copies after verified durable NAS acknowledgment. Track pending deletions for the next browser session; do not depend on unload. RA-21 defines active-file and browser deletion limits.
 
 Acceptance:
 - Refresh and network interruption do not lose a locally saved scan or create a duplicate.
@@ -179,12 +195,15 @@ Acceptance:
 
 Type: Feature. Size: M. Depends on: RA-08.
 
+Progress: the SQLite queue and separate worker implement immediate processing, renewable leases, three bounded attempts, manual retry, approval, post-commit cleanup and Drive jobs. Tests cover lease recovery, failed archive writes, filesystem-finalization replay and decode replay after approved cleanup. Tesseract currently runs per receipt; persistent warm engines and NAS throughput remain benchmark work.
+
 Work:
 - Add persisted jobs for image processing, extraction, export, and Drive transfer.
 - Record stage, attempts, version, timestamps, and a safe error summary.
 - Use bounded retries and worker leases that can recover after a crash.
 - Make each stage safe to repeat. Keep failed jobs available for review or retry.
 - Limit concurrency for the measured NAS memory capacity.
+- Enqueue processing immediately after each durable receive commit. Reuse warm engines; do not wait for the full 30–40 receipt batch without a measured benefit. Measure single-receipt latency and queue-drain time separately.
 
 Acceptance:
 - Restart the service during each stage and recover without lost receipts or duplicate active jobs.
@@ -218,7 +237,8 @@ Type: Feature. Size: M. Depends on: RA-05, RA-10, RA-11.
 Work:
 - Extract the purchase date from the whole receipt without a user-selected box.
 - Keep raw OCR, text locations where available, competing field candidates, and engine version.
-- Extract transaction time, merchant, currency, total, receipt type, and transaction references where present. Keep evidence for RA-20 grouping and RA-16 naming.
+- Extract transaction time with source evidence for RA-20 grouping and RA-16 naming. Optional merchant/layout signatures may assist OCR without requiring a merchant name. Currency, totals, items, and transaction references are deferred.
+- Select the earliest supported complete transaction date/time per receipt, regardless of terminal/register source. Preserve every candidate and record the selection reason. Pair dates/times by source context; never form a new timestamp from independently minimized components. Resolve ambiguous parses/associations in staging.
 - Require a resolved date and time for the final path. Missing values stay in staging for user resolution; do not substitute capture time.
 - Validate dates and distinguish transaction, return, promotion, and print dates.
 - Preserve ambiguity in day/month order and missing years. Use locale and expected period as evidence, not permission to invent a value.
@@ -226,7 +246,9 @@ Work:
 
 Acceptance:
 - Tests cover ambiguous numeric dates, named months, missing years, two-digit years, old receipts, multiple dates, and invalid dates.
+- Tests include French months, Japanese/Chinese year-month-day notation, mixed scripts, and Japanese era dates where the real corpus requires them.
 - Every proposed purchase date points to source evidence or is marked unsupported.
+- Multiple genuine transaction timestamps select the earliest chronological candidate, including across midnight and with seconds present; their presence alone does not force ambiguity. Unresolved interpretations remain reviewable rather than being resolved by simply taking their minimum.
 - Model output follows a validated schema; malformed output goes to review.
 - The user can inspect why a date was proposed.
 
@@ -250,6 +272,8 @@ Acceptance:
 
 Type: Feature. Size: M. Depends on: RA-08, RA-10. Add RA-12 evidence when available.
 
+Progress: manual date/time review, full-resolution strip inspection, same-minute grouping/vendor-hint veto, manual combine/split/reorder, path preparation and version-bound approval are implemented. Missing fields/completeness/readability block approval. Approved exports are immutable in this slice; revision, replacement-scan and pinning workflows remain.
+
 Work:
 - Stage all clear and unclear results before Drive; show unclear results first, reasons, and justified confidence. Show the original beside proposed fields and procedure alternatives before approval.
 - Let the user edit fields, rotate pages, choose each page's processed master, or request a rescan.
@@ -272,9 +296,9 @@ Acceptance:
 Type: Feature. Size: M. Depends on: RA-01, RA-12, RA-14.
 
 Work:
-- Store confirmed labels and optional merchant-specific date or layout rules. Pin needed bad-sample originals and all procedure results before approval; normal originals are not kept long term.
+- Store confirmed labels and optional date-region/layout rules; merchant names are not required. Pin needed bad-sample originals and all procedure results before approval; normal originals are not kept long term.
 - Require user confirmation of a proposed rule. A new merchant does not automatically create a trusted rule.
-- Match rules only when merchant and layout evidence support their use.
+- Match rules only when layout or optional merchant evidence supports their use. Benchmark visual embeddings only if simpler OCR-anchor/geometric matching is insufficient; no vector database is a release requirement.
 - Compare changes against prior failures and the reserved test set before enabling them.
 - Provide rule history, disable, and rollback controls. Keep training data private by default.
 
@@ -288,20 +312,22 @@ Acceptance:
 
 Type: Feature. Size: M. Depends on: RA-10, RA-14. Use RA-11 output when available.
 
+Progress: lossless reference TIFF masters, DPI-sized image PDFs, immutable manifests and collision reservations are implemented. The amd64 container smoke check verifies an approximately 881 mm real sample's PDF page size and embedded RGB checksum, plus approved artifact recovery after recreation. Enhanced-master selection and viewer compatibility beyond structural checks remain.
+
 Work:
 - Build each group PDF from the selected per-page processed masters in the approved order. Use readable binary images where text is preserved; otherwise use grayscale or color.
 - Durably commit the approved PDF, selected per-page masters, checksums, and metadata before RA-21 cleanup. Failed commits retain all staging files.
 - Use scan resolution for physical page size and test very long pages in common viewers.
 - Split presentation pages if required by viewer limits without losing source image content.
 - Use `{year}/{month}-{month_name}/{year}{month}{date}-{hour}{minute}.pdf`, for example `2026/09-September/20260914-1721.pdf`. Use four-digit year, two-digit month/day/hour/minute, English month name, and 24-hour transaction time.
-- Proposed naming source for combined original/return groups: use the original purchase date and time by default. Keep all purchase and return dates, times, and source evidence in metadata; show the chosen source for confirmation.
-- Keep missing date/time, uncertain naming sources, and path collisions in staging for user resolution. Do not invent values, silently add suffixes, or overwrite another artifact. Keep internal stable IDs separate from paths.
+- Use the earliest supported complete transaction timestamp across all member receipts for naming, including original/return groups. Preserve every date/time and source region, compare full timestamps before minute formatting, and show the selected source/reason in staging.
+- Keep missing date/time and uncertain naming sources in staging; manual resolution is required before approval/upload and no missing-time exception is allowed. Merge same-minute groups unless clearly different vendors. For non-mergeable groups reserve `-{n}` (`-1`, `-2`, etc.) transactionally, check existing files, and show the stable final path before approval. Keep IDs separate from paths.
 - Store PDF checksum, group/source version, selected master versions, naming source, user decisions, and export version.
 - Keep a manual download path independent of Drive availability.
 
 Acceptance:
 - PDFs preserve readable faint text and contain the complete approved image.
-- Missing times and same-minute collisions block final path commit and upload until the user resolves them. No artifact is overwritten.
+- Missing times block approval/final path commit/upload until resolved. Non-mergeable same-minute groups use durable suffix reservations; retries cannot overwrite or renumber another artifact.
 - A source, grouping, order, or naming change needs new approval and creates a controlled new export version.
 - Tests cover combined original/return naming, retained dates, month boundaries, missing values, and collisions.
 - Tests check page orientation, dimensions, complete content, and target viewer behavior.
@@ -310,9 +336,12 @@ Acceptance:
 
 Type: Feature. Size: M. Depends on: RA-04, RA-10, RA-16.
 
+Progress: optional server-held OAuth, existing-root validation, folder/name lookup, explicit approved-only delivery, resumable upload and identity reconciliation are implemented. Simulated-provider tests cover a lost successful response, filename conflicts, state replay and token file permissions. Live account/OAuth verification awaits configuration.
+
 Work:
-- Configure the account, target root folder, and existing sharing rules. Use the approved RA-16 year/month folder path and filename.
+- Use the personal Drive account and existing receipts root shared with the user's wife. Preserve inherited sharing and use the approved RA-16 year/month path and collision suffix.
 - Use the least Google permission scope that supports the selected folder workflow.
+- Verify collision visibility for pre-existing files not created by the app; `drive.file` alone may need supplementary read-only metadata access. Persist folder/file IDs instead of relying on names alone.
 - Keep refresh tokens and other credentials on the server. Support revocation and reconnection.
 - Use stable receipt/export identity to reconcile retries, including a successful upload with a lost response.
 - Handle resumable transfers, rate limits, expired credentials, and network failures.
@@ -330,20 +359,23 @@ Acceptance:
 
 Type: Deployment. Size: M. Depends on: RA-04, RA-08, RA-10, RA-17.
 
+Progress: a pinned-base amd64 Docker image builds and runs non-root with all five OCR packs, local scanner/UI assets, isolation headers, exact-origin checks, persistent mounts, child-process supervision and health checks. The [runtime instructions](../application-runtime.md) and isolated container smoke test cover recreation without host/proxy configuration. Broader operational acceptance remains open.
+
 Work:
-- Supply pinned build assets and a container deployment if the NAS supports it.
+- Supply pinned build assets and a runnable amd64 Docker image with HTTP port, persistent volumes, health checks, environment variables, external URL/OAuth callback, and worker limits documented. Do not implement NAS, proxy, network, or share configuration.
 - Include tested HTTPS, isolation headers, correct worker/WASM response types, and persistent volume settings.
-- Add authentication, session expiry, request-origin/CSRF protection where applicable, and upload limits.
+- Honor the external authentication boundary and test expired-session/login-response handling, request-origin protection, and upload limits. No app-specific authentication implementation or Caddy/Authelia configuration.
 - Run with minimum filesystem access. Do not expose the NAS USB devices to the service.
-- Back up approved PDFs, selected per-page masters, metadata, database, corrections, settings, and encrypted credentials. Apply RA-21 policy to staging files, pinned samples, backup expiry, and restored deletion records.
-- Document installation, upgrade, schema migration, rollback, restore, and log retention.
+- Document `/state`, `/work`, `/samples`, and `/archive` mount semantics; require a SQLite-compatible local filesystem for state. User chooses host placement.
+- Read `OPENROUTER_API_KEY` from the environment only when external LLM calls are needed; support starting with LLM features disabled. Do not request the key during sample collection.
+- Document installation, upgrade, schema migration, compatible rollback, restart recovery, and log retention. App-managed backup and backup restore are excluded.
 - Keep LAN access as the default. Remote access is a separate decision.
 
 Acceptance:
-- Install on an empty NAS service directory using the instructions.
+- Start the image with fresh persistent directories using the documented runtime contract; no NAS-specific setup is required from the app.
 - Recreate the container without losing receipt data or pending jobs.
-- Restore a backup and verify checksums, records, and Drive references before workers resume.
-- A restart does not need new Drive authorization unless credentials were revoked or omitted from restore.
+- Verify checksums, records, and Drive references after container recreation against persistent volumes.
+- A restart does not need new Drive authorization unless credentials were revoked or removed.
 - No receipt or API endpoint is public by accident.
 
 ## RA-19 — Run release and failure tests
@@ -358,7 +390,7 @@ Work:
 - Check that clear and unclear results enter staging, with unclear first, and that only selected, current approvals reach Drive.
 - Test automatic grouping, manual combine/split/reorder, per-page alternatives, original/return naming, missing times, and path collisions.
 - Test concurrent edits, stale jobs, stale approvals, and edits during upload. Compare final PDFs with originals before cleanup or use pinned test samples.
-- Test cleanup after durable approved commit without Drive, failed commits, sample pins, backup expiry, browser deletion, and restore.
+- Test cleanup after durable approved commit without Drive, failed commits, sample pins, browser deletion, and container restart/recreation.
 - Verify all procedure run records, versions, ranks, selections, overrides, failures, and runtime. Keep optional LLM tests separate from release conditions.
 
 Acceptance:
@@ -372,13 +404,14 @@ Acceptance:
 Type: Feature. Size: M. Depends on: RA-12, RA-14.
 
 Work:
-- Automatically group itemized and payment terminal receipts, and original purchase and return receipts, using extracted dates, merchant, amounts, transaction references, and source evidence.
+- Combine same-calendar-date/same-minute receipts by default unless clear vendor evidence vetoes the merge. Unknown vendor evidence permits merging; differing seconds within the same minute do not veto it. Cross-minute tolerance is an optional later experiment.
+- Use optional merchant/header/logo evidence for the vendor veto without requiring a normalized merchant name. Amount, currency, item, and reference extraction remain deferred.
 - Do not use scan proximity or visual similarity alone as proof. Keep weak or conflicting matches unresolved in staging and show reasons.
-- Retain each receipt's identity, type, dates, and evidence. Support multiple returns and ordered pages without deleting duplicate-looking captures.
-- Use the proposed RA-16 original purchase naming default for original/return groups. Require user confirmation or resolution of an unsupported source.
+- Retain each receipt's identity, dates/times, optional type, and evidence. Different-time returns require manual combine unless a compatible original transaction timestamp is actually printed. Support ordered pages without deleting duplicate-looking captures.
+- Use each receipt's RA-12 earliest supported timestamp as its date/minute grouping key, and RA-16's earliest member timestamp for group naming. Unsupported or ambiguous sources require staging resolution.
 - Integrate automatic groups with RA-14 manual combine, split, reorder, selection, and version-safe approval. Group changes invalidate prior approval.
 - For a match to an uploaded original, propose a staged revision using retained selected page images. Require new approval before a Drive update; do not silently change the existing group.
-- Check complete-group consistency so a chain of weak pair matches cannot join unrelated purchases.
+- Check complete-group timestamp/vendor consistency so an unknown-vendor page cannot bridge two clearly different vendors. Non-mergeable groups use RA-16's stable numeric suffix rule.
 
 Acceptance:
 - Tests cover valid pairs, multiple returns, missing originals, unrelated similar receipts, duplicate scans, and conflicting evidence.
@@ -389,6 +422,8 @@ Acceptance:
 
 Type: Feature. Size: M. Depends on: RA-14, RA-16.
 
+Progress: cleanup is a separate retryable job after durable masters/PDF/manifest and database approval. It rechecks archived checksums before deleting raw originals/chunks and working reference masters; previews/OCR/metadata remain. Failed approval preserves staging and Drive outages do not block cleanup. Production sample pinning and richer retention policies remain unimplemented; private collector samples are untouched.
+
 Work:
 - Keep unchanged originals and all procedure outputs on disk through staging. Approval alone does not permit deletion.
 - Delete normal originals and unselected outputs only after the exact approved version's selected per-page masters, PDF, and metadata have a verified durable commit. Do not wait for Drive upload.
@@ -396,12 +431,12 @@ Work:
 - Retain all staging files on approval or commit failure. Make cleanup version-safe, restart-safe, and safe to repeat; protect files still used by pending work or other groups.
 - Before approval, let the user pin a bad sample's original and all procedure results for improvement. Confirm the pin is durable before cleanup. Set a separate access, retention, and explicit deletion policy for pinned samples.
 - Delete browser transfer copies after verified NAS save; record deferred deletion for the next session. Do not claim deletion from a closed browser or user-made copies.
-- Define staging recovery backups and a finite backup expiry period. Carry deletion records into restore and reapply them before workers start. Explain that live cleanup cannot immediately erase immutable backups; exclude expired staging data from new backups.
+- Retain deletion and pin state across container restarts. App-managed backups and backup restore are excluded; active-file cleanup does not control user-managed copies.
 
 Acceptance:
 - Tests cover failed commit, disk full, crash during cleanup, stale versions, shared files, durable pins, and repeat cleanup.
 - Drive outage does not block eligible cleanup or remove the durable approved artifacts needed for retry.
-- Backup and browser policies state deletion timing, limits, and recovery steps. Restore does not revive expired files as active receipts.
+- Active-file and browser policies state deletion timing, limits, and restart-recovery steps. Container restart does not revive deleted files as active receipts.
 
 ## RA-22 — Measure procedure performance over time
 
@@ -425,6 +460,7 @@ Type: Optional experiment. Size: M. Depends on: RA-11, RA-22, RA-05. Not a relea
 
 Work:
 - Let an optional LLM propose a structured recipe from a fixed allowlist of OpenCV operations and bounded parameters. Do not accept arbitrary code, synthetic images, or generated receipt text.
+- Use GPT-6.1 Sol through OpenRouter for new procedure design; use GPT-6 Luna or Claude Haiku 5.5 for routine model tasks. Support an independently benchmarked Ollama provider with explicitly configured local model tags.
 - Validate the recipe before execution. Run it in a sandbox with strict time, memory, pixel, file, and process limits; no network, secrets, arbitrary imports, or arbitrary code execution.
 - Keep any model service outside the execution sandbox. Require explicit consent for external receipt data transfer, retention terms, and cost limits before an external call. Treat receipt content and model output as untrusted.
 - Test candidates against originals, permitted pinned failures, and the reserved test set under RA-11 and RA-22. Require text-preservation checks and human review before promotion into the versioned procedure set.

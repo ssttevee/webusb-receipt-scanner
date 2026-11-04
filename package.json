@@ -1,0 +1,22 @@
+{
+  "name": "receipt-scanner",
+  "private": true,
+  "scripts": {
+    "build:app": "tsc --noEmit -p web/tsconfig.json && vite build --config web/vite.config.mts",
+    "test:app": "python3 -m pytest tests/test_application.py tests/test_drive.py -q",
+    "test:app-browser": "node --test tests/application-browser.test.mjs",
+    "samples": "python3 sample-server.py",
+    "test:samples": "node --test tests/raw-scanner.test.mjs && python3 -m unittest discover -s tests -p 'test_sample_server.py'",
+    "test:scanner-browser": "node --test tests/compiled-driver.test.mjs"
+  },
+  "dependencies": {
+    "dexie": "4.4.7",
+    "preact": "11.0.2",
+    "sane-wasm": "0.5.0"
+  },
+  "devDependencies": {
+    "playwright": "1.64.0",
+    "typescript": "7.0.2",
+    "vite": "8.3.5"
+  }
+}

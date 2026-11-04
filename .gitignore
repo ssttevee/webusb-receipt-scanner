@@ -1,0 +1,13 @@
+node_modules/
+.receipt-samples/
+__pycache__/
+*.pyc
+scanner-driver/build/
+web/build/
+.app-data/
+.pytest_cache/
+.ruff_cache/
+.venv/
+.env
+.env.*
+!.env.example

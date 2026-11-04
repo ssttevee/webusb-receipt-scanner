@@ -1,0 +1,85 @@
+diff --git a/backend/epsonds-cmd.c b/backend/epsonds-cmd.c
+--- a/backend/epsonds-cmd.c
++++ b/backend/epsonds-cmd.c
+@@ -780,6 +780,18 @@ SANE_Status esci2_capa(epsonds_scanner *s)
+ 
+ /* STAT */
+ 
++/* Firmware may pad its four-byte status codes with one or two spaces. */
++static SANE_Bool stat_value_is(const char *value, int len, const char *expected)
++{
++	int size = strlen(expected);
++	if (len < size || memcmp(value, expected, size) != 0)
++		return SANE_FALSE;
++	for (int i = size; i < len; ++i)
++		if (value[i] != ' ' && value[i] != '\0')
++			return SANE_FALSE;
++	return SANE_TRUE;
++}
++
+ static SANE_Status stat_cb(void *userdata, char *token, int len)
+ {
+ 	char *value = token + 3;
+@@ -791,15 +803,19 @@ static SANE_Status stat_cb(void *userdata, char *token, int len)
+ 	}
+ 
+ 	if (strncmp("ERR", token, 3) == 0) {
+-		if (strncmp("ADF PE ", value, len) == 0) {
++		if (stat_value_is(value, len, "ADF PE")) {
+ 			DBG(1, "     PE : paper empty\n");
+ 			return SANE_STATUS_NO_DOCS;
+ 		}
+ 
+-		if (strncmp("ADF OPN", value, len) == 0) {
++		if (stat_value_is(value, len, "ADF OPN")) {
+ 			DBG(1, "     conver open\n");
+ 			return SANE_STATUS_COVER_OPEN;
+ 		}
++		if (stat_value_is(value, len, "ADF PJ"))
++			return SANE_STATUS_JAMMED;
++		/* Unknown error tokens must not authorize a new image transfer. */
++		return SANE_STATUS_IO_ERROR;
+ 	}
+ 
+ 	return SANE_STATUS_GOOD;
+diff --git a/backend/epsonds.c b/backend/epsonds.c
+--- a/backend/epsonds.c
++++ b/backend/epsonds.c
+@@ -2828,6 +2828,23 @@ sane_start(SANE_Handle handle)
+ 	char cmd[CMD_BUF_SIZE]; /* take care not to overflow */
+ 	SANE_Status status = 0;
+ 
++	/* Do not discard a pending cancel and resume the previous ADF data job.
++	 * A page-end reply need not contain lft, so scanning may still be set. */
++	if (s->canceling) {
++		if (s->scanning) {
++			status = esci2_can(s);
++			if (status != SANE_STATUS_GOOD)
++				return status;
++		}
++		s->scanning = SANE_FALSE;
++		s->scanEnd = 0;
++		s->pages = 0;
++		eds_ring_flush(&s->front);
++		eds_ring_flush(&s->back);
++		eds_ring_destory(&s->front);
++		eds_ring_destory(&s->back);
++	}
++
+ 	s->pages++;
+ 
+ 	DBG(5, "** %s, pages = %d, scanning = %d, backside = %d, front fill: %d, back fill: %d\n",
+@@ -2890,10 +2907,10 @@ sane_start(SANE_Handle handle)
+ 	/* document source */
+ 	if (strcmp(source_list[s->val[OPT_SOURCE].w], STRING_ADFFRONT) == 0 || strcmp(source_list[s->val[OPT_SOURCE].w], STRING_ADFDUPLEX) == 0) {
+ 
+-		SANE_Int status = esci2_stat(s);
+-		if (status == SANE_STATUS_NO_DOCS)
++		status = esci2_stat(s);
++		if (status != SANE_STATUS_GOOD)
+ 		{
+-		   return SANE_STATUS_NO_DOCS;
++		   return status;
+ 		}
+ 
+ 		SANE_Int duplexMode = (strcmp(source_list[s->val[OPT_SOURCE].w], STRING_ADFDUPLEX) == 0);
