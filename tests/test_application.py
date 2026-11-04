@@ -316,3 +316,63 @@ def test_delete_blocks_running_processing_and_approved_groups(runtime):
         connection.execute("UPDATE groups SET state='approved' WHERE id=?", (group['id'],))
     assert client.request('DELETE', f'/api/receipts/{identity}', json={'version': group['version']}).status_code == 409
     assert (store.settings.work / 'captures' / identity).exists()
+
+
+def test_automatic_proposal_prefills_fields_but_cannot_confirm_itself(runtime, monkeypatch):
+    from server.extraction import Line, extract
+    import server.worker as worker
+    client, store = runtime
+    store.settings.ocr = True
+    selected = extract([Line("2026-09-14 17:21:30", (0, 10, 500, 30), 95, "discovery"),
+                        Line("2026-09-14 17:21:30", (0, 10, 500, 30), 95, "tile-00")])
+    monkeypatch.setattr(worker, "recognize", lambda *args, **kwargs: {"state": "done", "engine": "fixture", "extraction": selected})
+    first, _ = capture(client, store)
+    second, _ = capture(client, store)
+    group = state(client)["groups"][0]
+    assert len(group["receipts"]) == 2  # Automatic same-minute proposals group incrementally.
+    assert all(r["date"] == "2026-09-14" and r["time"] == "17:21:30" for r in group["receipts"])
+    assert all(r["field_source"] == "ocr" and r["timestamp_review"] for r in group["receipts"])
+    with store.transaction() as connection:
+        connection.execute("UPDATE receipts SET complete=1,readable=1")
+    rejected = client.post(f"/api/groups/{group['id']}/prepare", json={"version": group["version"]})
+    assert rejected.status_code == 409 and "Confirm" in rejected.json()["detail"]
+    for manifest in (first, second):
+        assert review(client, manifest["id"]).status_code == 200
+    group = state(client)["groups"][0]
+    assert all(r["field_source"] == "manual" and r["timestamp_review"] == 0 for r in group["receipts"])
+    assert prepared(client, group)["path"].endswith("20260914-1721.pdf")
+
+
+def test_ambiguous_extraction_keeps_manual_fields_empty(runtime, monkeypatch):
+    from server.extraction import Line, extract
+    import server.worker as worker
+    client, store = runtime
+    store.settings.ocr = True
+    result = extract([Line("01/09/2022 12:21:41", (0, 10, 500, 30), 95, "discovery")])
+    monkeypatch.setattr(worker, "recognize", lambda *args, **kwargs: {"state": "done", "extraction": result})
+    manifest, _ = capture(client, store)
+    receipt = state(client)["groups"][0]["receipts"][0]
+    assert receipt["date"] is None and receipt["time"] is None
+    evidence = client.get(f"/api/receipts/{manifest['id']}/evidence").json()["processing"]
+    assert evidence["extraction"]["status"] == "needs_review"
+    assert "ambiguous_numeric_date" in evidence["extraction"]["issues"]
+
+
+def test_schema_one_migration_preserves_manual_timestamps(tmp_path):
+    import sqlite3
+    settings = Settings(tmp_path / "state", tmp_path / "work", tmp_path / "archive", ocr=False)
+    settings.state.mkdir()
+    connection = sqlite3.connect(settings.state / "receipts.sqlite3")
+    connection.executescript("""CREATE TABLE receipts(id TEXT PRIMARY KEY, date TEXT, time TEXT);
+      INSERT INTO receipts VALUES('manual','2021-12-21','12:45:42');
+      INSERT INTO receipts VALUES('missing','2021-12-21',NULL);
+      PRAGMA user_version=1;""")
+    connection.close()
+    store = Store(settings)
+    with store.transaction() as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        manual = dict(connection.execute("SELECT * FROM receipts WHERE id='manual'").fetchone())
+        assert manual["date"] == "2021-12-21" and manual["time"] == "12:45:42"
+        assert manual["field_source"] == "manual" and manual["timestamp_review"] == 0
+        missing = dict(connection.execute("SELECT * FROM receipts WHERE id='missing'").fetchone())
+        assert missing["time"] is None and missing["timestamp_review"] == 1

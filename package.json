@@ -3,7 +3,7 @@
   "private": true,
   "scripts": {
     "build:app": "tsc --noEmit -p web/tsconfig.json && vite build --config web/vite.config.mts",
-    "test:app": "python3 -m pytest tests/test_application.py tests/test_drive.py -q",
+    "test:app": "python3 -m pytest tests/test_application.py tests/test_drive.py tests/test_extraction.py -q",
     "test:app-browser": "node --test tests/application-browser.test.mjs",
     "samples": "python3 sample-server.py",
     "test:samples": "node --test tests/raw-scanner.test.mjs && python3 -m unittest discover -s tests -p 'test_sample_server.py'",

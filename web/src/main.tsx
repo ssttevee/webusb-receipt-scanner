@@ -2,6 +2,7 @@ import { render } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import Dexie, { type Table } from "dexie";
 import "./style.css";
+import "./evidence.css";
 
 type Frame = { format: number; depth: number; bytes_per_line: number; pixels_per_line: number; lines: number; last_frame: boolean };
 type ScannerCapture = { blob: Blob; dimensions: { width: number; height: number }; scanner: {
@@ -12,7 +13,11 @@ type Manifest = { id: string; kind: "scanner-raw" | "image"; sha256: string; byt
 type Pending = { id: string; created: number; blob: Blob; manifest: Manifest };
 type Diagnostic = { id: string; blob: Blob; metadata: unknown };
 type Receipt = { id: string; group_id: string; date: string | null; time: string | null; state: string;
-  complete: number; readable: number; vendor: string | null; error: string | null; languages: string[] };
+  complete: number; readable: number; vendor: string | null; error: string | null; languages: string[];
+  field_source: "manual" | "ocr" | "unresolved"; timestamp_review: number };
+type Candidate = { id: string; dates: string[]; time: string | null; issues: string[];
+  sources: { text: string; box: number[]; ocr_confidence: number; pass: string }[] };
+type Extraction = { version: string; status: string; issues: string[]; selected: { date: string; time: string } | null; candidates: Candidate[] };
 type Export = { id: string; path: string; state: string; drive_id: string | null };
 type Group = { id: string; version: number; state: string; manual: number; receipts: Receipt[]; exports: Export[] };
 type Job = { id: string; kind: string; target: string; state: string; attempts: number; error: string | null };
@@ -83,10 +88,17 @@ function ReceiptEditor({ receipt, group, refresh, selected, select, report }: {
   const [row, setRow] = useState(0);
   const [height, setHeight] = useState(512);
   const [evidence, setEvidence] = useState<unknown>(null);
+  const [extraction, setExtraction] = useState<Extraction | null>(null);
   const [busy, setBusy] = useState(false);
   const [baseVersion, setBaseVersion] = useState(group.version);
   const stale = baseVersion !== group.version;
-  useEffect(() => { if (receipt.state === "ready") setBaseVersion(group.version); }, [receipt.state]);
+  useEffect(() => {
+    if (receipt.state !== "ready") return;
+    setBaseVersion(group.version); setDate(receipt.date ?? ""); setClock(receipt.time ?? "");
+    void api<{ capture: { height: number }; processing: { extraction?: Extraction } | null }>(`/api/receipts/${receipt.id}/evidence`, undefined, "GET").then(result => {
+      setHeight(result.capture.height); setEvidence(result.processing); setExtraction(result.processing?.extraction ?? null);
+    }).catch(error => report(String(error)));
+  }, [receipt.state]);
   const editable = group.state === "staging" && receipt.state === "ready";
   async function inspect() {
     try {
@@ -99,6 +111,19 @@ function ReceiptEditor({ receipt, group, refresh, selected, select, report }: {
       onChange={event => select(event.currentTarget.checked)} /> Select page <code>{receipt.id.slice(0, 8)}</code></label>
       <span class="badge">{receipt.state}</span></header>
     {receipt.state === "ready" && <img class="thumbnail" src={`/api/receipts/${receipt.id}/image`} alt={`Receipt ${receipt.id.slice(0, 8)} preview`} loading="lazy" onClick={inspect} />}
+    {extraction && <section class="proposal"><strong>{extraction.selected ? "OCR timestamp proposal — confirm against the scan" : "Timestamp needs manual review"}</strong>
+      {receipt.field_source === "manual" && <p>Your saved fields take priority over the OCR proposal.</p>}
+      {extraction.issues.length > 0 && <p class="muted">{extraction.issues.map(issue => issue.replaceAll("_", " ")).join(" · ")}</p>}
+      <details><summary>Timestamp candidates & source regions ({extraction.candidates.length})</summary>
+        {extraction.candidates.map(candidate => <div class="candidate" key={candidate.id}>
+          <p><code>{candidate.dates.join(" or ") || "Unresolved date"} {candidate.time || "Invalid time"}</code></p>
+          {candidate.issues.length > 0 && <p class="muted">{candidate.issues.map(issue => issue.replaceAll("_", " ")).join(" · ")}</p>}
+          {candidate.sources.map((source, index) => <div key={index}><pre>{source.text}</pre>
+            <button class="secondary" onClick={() => { setRow(Math.max(0, Math.min(height - 1, source.box[1] - 24))); setInspection(true); }}>Inspect source at row {source.box[1]}</button>
+          </div>)}
+        </div>)}
+      </details>
+    </section>}
     <form onSubmit={async event => {
       event.preventDefault(); setBusy(true);
       try { const saved = await api<{ version: number }>(`/api/receipts/${receipt.id}`, { version: baseVersion, date: date || null, time: clock || null,
@@ -312,7 +337,7 @@ function App() {
     }}>{["eng", "fra", "jpn", "chi_tra", "chi_sim"].map(language => <option value={language} selected={languages.includes(language)}>{language}</option>)}</select></label>
       <label>Or import an unprocessed PNG (200 DPI)<input type="file" accept="image/png" onChange={event => { const file = event.currentTarget.files?.[0]; if (file) void importImage(file); event.currentTarget.value = ""; }} /></label>
       <div><strong>{pending} browser copies pending</strong><p><button class="secondary" onClick={resume}>Resume transfers</button></p></div></div>
-      <p class="muted">Transport completion does not confirm the physical bottom. Check it during review. Local OCR is discovery evidence; dates and times are manually confirmed in this first slice.</p>
+      <p class="muted">Transport completion does not confirm the physical bottom. Check it during review. OCR proposes supported timestamps; Save review confirms or corrects each proposal before approval.</p>
       {diagnostics.length > 0 && <details><summary>{diagnostics.length} incomplete/fault captures retained in this browser</summary>{diagnostics.map(item => <DiagnosticDownload item={item} key={item.id} />)}</details>}
     </section>
     <p class="status" role="status">{status}</p>

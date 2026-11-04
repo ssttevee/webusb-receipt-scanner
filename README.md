@@ -29,7 +29,9 @@ docker run --rm --name receipt-scanner --platform linux/amd64 \
 
 Open **http://localhost:8000** in desktop Chrome/Edge. The USB device stays on the workstation. The UI provides scanning, pending-transfer recovery, full-resolution inspection, manual date/time review, combine/split/reorder, deletion of bad scans from staging, version-bound approval, PDF download and explicit Drive delivery.
 
-This first slice creates a lossless reference master and local OCR evidence. Date/time confirmation is manual; automatic extraction, enhanced-image ranking, and staged revisions of approved exports are subsequent work. Approved exports are immutable in this slice.
+The application creates a lossless reference master and evidence-backed date/time proposals. Supported proposals prefill staging fields; Save review confirms or corrects them before approval. Ambiguous/unsupported sources stay in review. Enhanced-master ranking and staged revisions of approved exports remain subsequent work.
+
+See the [53-sample extraction baseline](docs/plans/receipt-extraction-baseline-2026-11-03.md) for measured proposal coverage, review cases and limits.
 
 See [runtime and development instructions](docs/application-runtime.md) for volumes, OAuth, checks, recovery and current verification limits.
 

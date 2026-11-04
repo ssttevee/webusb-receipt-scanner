@@ -109,7 +109,9 @@ def main():
         health_command = json.loads(docker("inspect", name, "--format", "{{json .Config.Healthcheck.Test}}"))
         assert health_command[0] == "CMD-SHELL"
         docker("exec", name, "sh", "-c", health_command[1])
-        assert group["receipts"][0]["date"] is None  # No ground-truth leakage into extraction.
+        proposal = evidence["processing"]["extraction"]["selected"]
+        assert group["receipts"][0]["date"] == (proposal["date"] if proposal else None)
+        assert group["receipts"][0]["timestamp_review"] == 1  # OCR never confirms its own proposal.
         request("POST", f"/api/receipts/{identity}", {"version": group["version"], "date": labels["date"], "time": labels["time"],
                 "vendor": None, "complete": True, "readable": True})
         group = request("GET", "/api/state")["groups"][0]

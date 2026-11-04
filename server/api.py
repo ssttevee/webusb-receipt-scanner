@@ -97,7 +97,7 @@ def create_app(settings=None, drive=None):
     def health():
         with store.transaction() as connection:
             connection.execute("SELECT 1").fetchone()
-        return {"ok": True, "schema": 1, "driver_ready": (ROOT / "scanner-driver/build/provenance.json").exists(),
+        return {"ok": True, "schema": 2, "driver_ready": (ROOT / "scanner-driver/build/provenance.json").exists(),
                 "free_work_bytes": shutil.disk_usage(settings.work).free, "ocr_enabled": settings.ocr}
 
     @app.post("/api/captures")
@@ -262,7 +262,7 @@ def create_app(settings=None, drive=None):
                 new_id = str(uuid.uuid4())
                 connection.execute("INSERT INTO groups(id,created) VALUES(?,?)", (new_id, time.time()))
                 connection.execute("UPDATE receipts SET group_id=?,page_order=1 WHERE id=?", (new_id, identity))
-            connection.execute("UPDATE receipts SET date=?,time=?,vendor=?,complete=?,readable=? WHERE id=?",
+            connection.execute("UPDATE receipts SET date=?,time=?,vendor=?,complete=?,readable=?,field_source='manual',timestamp_review=0 WHERE id=?",
                 (change.date, change.time, change.vendor, change.complete, change.readable, identity))
             store.regroup(connection, identity)
             current = receipt_row(connection, identity)
@@ -295,6 +295,8 @@ def create_app(settings=None, drive=None):
         receipts = [dict(row) for row in connection.execute("SELECT * FROM receipts WHERE group_id=? ORDER BY page_order", (identity,))]
         if not receipts or any(r["state"] != "ready" or not r["date"] or not r["time"] or not r["complete"] or not r["readable"] for r in receipts):
             fail("Every page needs a date, time, readable master and confirmed physical bottom before approval")
+        if any(receipt["timestamp_review"] for receipt in receipts):
+            fail("Confirm the proposed timestamp with Save review before approval")
         return receipts
 
     @app.post("/api/groups/{identity}/prepare")

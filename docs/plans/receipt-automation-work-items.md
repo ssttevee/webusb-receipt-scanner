@@ -99,6 +99,8 @@ Acceptance:
 
 Type: Research. Size: M. Depends on: RA-01; RA-04 for NAS performance measurements.
 
+Progress: the [53-sample extraction baseline](receipt-extraction-baseline-2026-11-03.md) measures the first Tesseract region/tile pipeline with corrected labels and all required language profiles. The final conservative gate proposes 22 matching timestamps and leaves 31 in review on the inspected development set. Warm engines, RapidOCR/ONNX comparison, unseen evaluation and actual NAS throughput remain open.
+
 Work:
 - Compare current Tesseract, a server OCR option, and a suitable local document model where hardware permits.
 - Test an external image/document service only after the user approves data transfer, retention terms, and a cost limit.
@@ -234,6 +236,8 @@ Acceptance:
 
 Type: Feature. Size: M. Depends on: RA-05, RA-10, RA-11.
 
+Progress: `server/recognition.py` and `extraction.py` implement original-coordinate OCR evidence, explicit calendar/time parsers, source association, ambiguity retention and earliest-supported proposals. The worker prefills supported fields and groups incrementally; schema 2 tracks provenance and requires Save review before approval. Tests cover numeric/century ambiguity, French/CJK/era notation, midnight, invalid seconds, distractors and OCR disagreement. Corpus recall and validated unseen accuracy remain open.
+
 Work:
 - Extract the purchase date from the whole receipt without a user-selected box.
 - Keep raw OCR, text locations where available, competing field candidates, and engine version.
@@ -256,6 +260,8 @@ Acceptance:
 
 Type: Feature. Size: M. Depends on: RA-01, RA-12, RA-14.
 
+Progress: timestamp proposals use direct multi-pass/repeated-source support and explicit review reasons. The UI exposes candidate text and source-strip controls without presenting OCR tool scores as correctness probabilities. Physical completeness/readability and timestamp confirmation remain separate gates. Image-master quality ranking and calibrated clarity thresholds remain open.
+
 Work:
 - Combine image quality, date/time validity, source evidence, candidate agreement, and measured extraction performance to classify clear and unclear results. Include RA-20 grouping evidence when available; show image, extraction, and grouping confidence separately.
 - Sort unclear results first in staging. Show reasons and confidence only where test evidence supports it; otherwise show unknown confidence.
@@ -272,7 +278,7 @@ Acceptance:
 
 Type: Feature. Size: M. Depends on: RA-08, RA-10. Add RA-12 evidence when available.
 
-Progress: manual date/time review, full-resolution strip inspection, same-minute grouping/vendor-hint veto, manual combine/split/reorder, path preparation and version-bound approval are implemented. Missing fields/completeness/readability block approval. Approved exports are immutable in this slice; revision, replacement-scan and pinning workflows remain.
+Progress: automatic timestamp proposals with mandatory confirmation, full-resolution source inspection, same-minute grouping/vendor-hint veto, manual combine/split/reorder, path preparation and version-bound approval are implemented. Missing fields, unconfirmed proposals, completeness and readability block approval. Approved exports are immutable in this slice; revision, replacement-scan and pinning workflows remain.
 
 Work:
 - Stage all clear and unclear results before Drive; show unclear results first, reasons, and justified confidence. Show the original beside proposed fields and procedure alternatives before approval.

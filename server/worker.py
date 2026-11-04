@@ -1,10 +1,8 @@
 """Lease-backed, restartable processing, approval and delivery jobs."""
 import io
 import json
-import os
 from pathlib import Path
 import signal
-import subprocess
 import threading
 import time
 
@@ -13,6 +11,7 @@ import numpy as np
 from PIL import Image
 
 from .drive import Drive
+from .recognition import recognize
 from .storage import Settings, Store, digest, durable_write, encode, sync_directory
 
 Image.MAX_IMAGE_PIXELS = 160000000
@@ -63,29 +62,26 @@ def process(store, identity):
     evidence = {"master_sha256": digest(master), "master_kind": "lossless_reference_v1",
                 "date_time_source": "manual_review_required", "ocr": None}
     if settings.ocr:
-        # Discovery only: never turn these unvalidated OCR strings into approved fields.
-        stem = directory / "ocr"
-        try:
-            result = subprocess.run(["tesseract", str(master), str(stem), "--dpi", str(manifest["dpi_y"]),
-                "-l", "+".join(manifest["languages"]), "--psm", "11", "txt", "tsv"],
-                capture_output=True, timeout=120, env={**os.environ, "OMP_THREAD_LIMIT": "2"})
-            success = result.returncode == 0
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            success = False
-        if not success:
-            evidence["ocr"] = {"state": "failed", "message": "Local OCR failed; manual staging remains available"}
-        else:
-            evidence["ocr"] = {"state": "done", "languages": manifest["languages"], "psm": 11,
-                               "text": stem.with_suffix(".txt").read_text(), "tsv": stem.with_suffix(".tsv").name}
+        evidence["ocr"] = recognize(image, dpi=manifest["dpi_y"], languages=manifest["languages"], output=directory / "ocr",
+                                    date_order=settings.date_order, century=settings.year_century)
+        evidence["extraction"] = evidence["ocr"].pop("extraction")
+        evidence["date_time_source"] = evidence["extraction"]["version"]
     image.close()
     durable_write(directory / "evidence.json", encode(evidence).encode())
     with store.transaction() as connection:
         # A stale retry must not invalidate manual edits to an already-ready receipt.
         receipt = connection.execute("SELECT * FROM receipts WHERE id=?", (identity,)).fetchone()
         if receipt["state"] != "ready":
-            connection.execute("UPDATE receipts SET state='ready',master=?,preview=?,evidence=?,error=NULL WHERE id=?",
-                               (str(master), str(preview), encode(evidence), identity))
+            selected = (evidence.get("extraction") or {}).get("selected")
+            manual = receipt["field_source"] == "manual"
+            connection.execute("""UPDATE receipts SET state='ready',master=?,preview=?,evidence=?,error=NULL,
+              date=?,time=?,field_source=?,timestamp_review=? WHERE id=?""",
+              (str(master), str(preview), encode(evidence), receipt["date"] if manual else selected["date"] if selected else None,
+               receipt["time"] if manual else selected["time"] if selected else None,
+               "manual" if manual else "ocr" if selected else "unresolved", 0 if manual else 1, identity))
             store.changed(connection, receipt["group_id"])
+            if selected and not manual:
+                store.regroup(connection, identity)
 
 
 def finalize_export(store, identity):

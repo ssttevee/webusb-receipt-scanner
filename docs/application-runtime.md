@@ -1,10 +1,12 @@
-# Application runtime: first capture-to-staging slice
+# Application runtime: capture-to-staging and timestamp proposals
 
 ## Implemented boundary
 
 The application serves a TypeScript/Preact/Vite UI and FastAPI API on one origin. It reuses the tested raw scanner controller and `receipt-longpaper-2` WASM driver. Browser captures are stored in IndexedDB before transfer, uploaded in checksum-acknowledged 4 MiB chunks, and removed from the pending queue only after a matching durable final acknowledgment. A failed/login-page acknowledgment leaves the browser copy pending. Partial scanner failures remain downloadable in browser diagnostics and do not enter the complete-receipt API.
 
-Each durable receive immediately queues processing. One separate worker creates a lossless TIFF reference master, bounded preview and optional Tesseract discovery text/TSV. It does not infer date/time from sample labels or automatically trust OCR. Use the full-resolution 512-row viewer, enter the earliest supported transaction date/time, and confirm readability and the physical bottom. Blank/missing fields remain in staging and block approval.
+Each durable receive immediately queues processing. A separate worker creates a lossless TIFF reference master, preview, bounded OCR regions and timestamp proposals. It reads no expected sample dates/times. The OCR path uses original grayscale discovery plus overlapping 1,600-row contrast copies; boxes map to the original image. The reference master stays unchanged.
+
+Supported proposals prefill date/time fields and may form same-minute staging groups. Each proposal needs direct agreement from two OCR passes or repeated printed regions. Calendar validation, source context and conflicting evidence can still require manual review. This is an evidence gate, not a correctness probability. Inspect the candidate text and source strips, then choose **Save review** to confirm/correct the fields. Approval rejects an unconfirmed OCR proposal even if date/time and image checkboxes are present.
 
 Saving reviewed fields automatically combines staged receipts with the same date/minute unless known vendor hints conflict. Unknown hints permit merging; group-wide checks prevent an unknown page bridging two different vendors. Optional hints are exact case-insensitive values, not an implemented visual merchant classifier. Select pages in the desired order and choose **Make selected pages a manual group** to combine or split a subset. Move up/down changes page order and marks grouping manual, preventing immediate automatic remerge.
 
@@ -14,7 +16,15 @@ Local and visible Drive collisions use the first available stable `-1`, `-2`, et
 
 If Drive is offline during path preparation, the UI records that its collision check was unavailable. Local approval/download/cleanup still work; delivery rechecks the filename before creating a remote file.
 
-This slice has one reference candidate, manual timestamp confirmation and immutable approved exports. Automatic timestamp extraction, warm-engine comparisons, image enhancement/ranking, production sample pinning, approved-group revisions, batch approval and richer cleanup policies remain planned. The initial slice does not satisfy all RA release acceptance checks.
+This slice has one reference master, automatic timestamp proposals, mandatory confirmation and immutable approved exports. Warm-engine comparisons, improved OCR recall, image enhancement/ranking, production sample pinning, approved-group revisions, batch approval and richer cleanup policies remain planned. It does not satisfy all RA release acceptance checks.
+
+### Timestamp policy and evidence
+
+The parser supports English/French month names, numeric dates, Japanese/Chinese year-month-day markers, Japanese era dates, hour/minute markers, AM/PM and seconds. It selects the earliest supported complete timestamp, preserving precision and every source candidate. Scheduled visits, business hours and coupon contexts are excluded; arbitrary reference digits are not trusted timestamp evidence. Invalid printed seconds, unresolved date associations and OCR disagreements require review.
+
+Ambiguous numeric order stays unresolved unless independent printed evidence resolves it or `DATE_ORDER` explicitly defines the intake convention. Two-digit years need `TWO_DIGIT_YEAR_CENTURY`; the application does not silently add 2000. Leave both settings unset for a mixed archive unless a convention is valid for that intake. Missing seconds remain minute precision. No missing field becomes midnight or scan time.
+
+Evidence includes extractor/recognizer versions, parser policy, raw OCR lines, original-coordinate boxes, OCR tool scores, selected candidate/reason and unresolved alternatives. Tool scores are not measured date accuracy. New captures use this path; existing manually reviewed fields remain intact.
 
 ## Image contract
 
@@ -29,12 +39,12 @@ This slice has one reference candidate, manual timestamp confirmation and immuta
 
 | Mount | Contents |
 | --- | --- |
-| `/state` | SQLite database/WAL (schema version 1), OAuth state, protected Drive refresh token, worker heartbeat |
+| `/state` | SQLite database/WAL (schema version 2), OAuth state, protected Drive refresh token, worker heartbeat |
 | `/work` | Pending chunks/originals, reference TIFFs, previews, private OCR/evidence |
 | `/samples` | Reserved for pinned production samples; this slice does not populate it |
 | `/archive` | Approved PDFs in year/month paths; `.exports/{id}/` holds selected masters, PDF bytes and immutable manifest |
 
-Use a local locking/durability-compatible filesystem for `/state`. Preserve the mounts across container recreation. Host storage, Caddy and Authelia setup belong to the deployment owner. Database transitions use SQLite WAL, `synchronous=FULL`, foreign keys and explicit transactions. The first schema uses Python's SQLite driver and `user_version=1`; unknown future versions are rejected. SQLAlchemy/Alembic adoption remains a later schema-management decision.
+Use a local locking/durability-compatible filesystem for `/state`. Preserve mounts across container recreation. Host storage, Caddy and Authelia setup belong to the deployment owner. Database transitions use SQLite WAL, `synchronous=FULL`, foreign keys and explicit transactions. Schema 2 adds field provenance and timestamp confirmation through a transaction-safe migration from schema 1. Existing complete manual fields retain their confirmation; unknown future versions are rejected. A schema-1-only image cannot open schema 2. SQLAlchemy/Alembic adoption remains a later decision.
 
 Files use temporary writes on the destination filesystem, fsync, finalization and directory fsync. Archive writes never rely on a cross-mount atomic rename. Ready exports and master checksums are rechecked before cleanup/delivery. App-managed backups are outside application scope.
 
@@ -44,6 +54,8 @@ Files use temporary writes on the destination filesystem, fsync, finalization an
 | --- | --- |
 | `APP_PUBLIC_URL` | `http://localhost:8000`; exact public origin |
 | `OCR_ENABLED` | `1`; `0` retains manual staging without OCR |
+| `DATE_ORDER` | Unset; optional `MDY`, `DMY` or `YMD` for an explicitly known intake convention |
+| `TWO_DIGIT_YEAR_CENTURY` | Unset; optional `1900` or `2000`; no implicit century |
 | `DRIVE_CLIENT_ID` | Optional Google OAuth web client ID |
 | `DRIVE_CLIENT_SECRET` | Optional server-side OAuth secret |
 | `DRIVE_ROOT_ID` | Existing personal Drive receipts folder ID |
@@ -84,7 +96,7 @@ Native OCR needs Tesseract and the selected packs installed. The Docker image bu
 ## Checks and recovery
 
 ```sh
-.venv/bin/python -m pytest tests/test_application.py tests/test_drive.py -q
+.venv/bin/python -m pytest tests/test_application.py tests/test_drive.py tests/test_extraction.py -q
 npm run test:samples
 npx playwright install chromium
 APP_TEST_PYTHON="$PWD/.venv/bin/python" npm run test:app-browser
@@ -105,4 +117,6 @@ npm run test:scanner-browser
 
 Backend fault-path tests and browser end-to-end checks cover lost acknowledgment/reload and production-UI capture through the compiled driver against simulated Epson USB. The amd64 image builds and passes isolated recreation/OCR/approval/PDF checks with a real approximately 881 mm capture, whose embedded pixels match the raw original. Physical USB lifecycle, approximately 1,000 mm real capture, NAS throughput, live OAuth and the broader RA acceptance matrix remain hands-on/follow-up checks.
 
-Latest local checks: **18 backend/provider tests**, **2 application browser tests**, and **21 existing collector stream/server tests** passed. The backend count includes staged-page deletion and upload tombstone checks. TypeScript/Vite builds pass. Both the synthetic-import and real-long-receipt amd64 container smoke runs pass, including the image's API/worker health command. No live Drive account or external model was contacted.
+The [extraction baseline](plans/receipt-extraction-baseline-2026-11-03.md) records corpus measurements and the repeatable benchmark command. The browser suite includes a native Tesseract proposal/source-strip check when Tesseract is installed. Python checks cover parser edge cases, proposal confirmation, automatic grouping, schema migration, stale approval, deletion and recovery. No live Drive account or external model was contacted.
+
+The current increment passes **51 Python tests** and **3 application browser tests**, plus the build/lint and synthetic/real-long-receipt amd64 container checks. Existing collector stream/server checks passed in the preceding application slice; the raw-capture implementation did not change in this increment.

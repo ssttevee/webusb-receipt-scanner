@@ -1,0 +1,5 @@
+.proposal{margin:12px 0;padding:14px;background:#f2f6fa;border:1px solid #d9e4ed;border-radius:8px}
+.proposal summary{font-size:.88rem}
+.candidate{border-top:1px solid #d4dfe4;padding:12px 0}
+.candidate pre{margin:8px 0;padding:8px;background:white;border-radius:5px}
+.candidate button{font-size:.8rem;padding:6px 10px}

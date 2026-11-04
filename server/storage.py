@@ -19,12 +19,19 @@ class Settings:
     public_url: str = "http://localhost:8000"
     ocr: bool = True
     lease_seconds: int = 300
+    date_order: str | None = None
+    year_century: int | None = None
+
+    def __post_init__(self):
+        if self.date_order not in (None, "MDY", "DMY", "YMD") or self.year_century not in (None, 1900, 2000):
+            raise ValueError("DATE_ORDER must be MDY/DMY/YMD; TWO_DIGIT_YEAR_CENTURY must be 1900/2000 or unset")
 
     @classmethod
     def environment(cls):
         return cls(Path(os.getenv("STATE_DIR", "/state")), Path(os.getenv("WORK_DIR", "/work")),
                    Path(os.getenv("ARCHIVE_DIR", "/archive")), os.getenv("APP_PUBLIC_URL", "http://localhost:8000").rstrip("/"),
-                   os.getenv("OCR_ENABLED", "1") == "1")
+                   os.getenv("OCR_ENABLED", "1") == "1", date_order=os.getenv("DATE_ORDER") or None,
+                   year_century=int(os.environ["TWO_DIGIT_YEAR_CENTURY"]) if os.getenv("TWO_DIGIT_YEAR_CENTURY") else None)
 
 
 def encode(value):
@@ -81,7 +88,8 @@ CREATE TABLE receipts(id TEXT PRIMARY KEY REFERENCES captures(id), group_id TEXT
  page_order INTEGER NOT NULL DEFAULT 1, state TEXT NOT NULL DEFAULT 'queued',
  date TEXT, time TEXT, vendor TEXT, complete INTEGER NOT NULL DEFAULT 0,
  readable INTEGER NOT NULL DEFAULT 0, languages TEXT NOT NULL DEFAULT '["eng"]',
- master TEXT, preview TEXT, evidence TEXT, error TEXT, created REAL NOT NULL);
+ master TEXT, preview TEXT, evidence TEXT, error TEXT, created REAL NOT NULL,
+ field_source TEXT NOT NULL DEFAULT 'unresolved', timestamp_review INTEGER NOT NULL DEFAULT 1);
 CREATE TABLE exports(id TEXT PRIMARY KEY, group_id TEXT NOT NULL REFERENCES groups(id),
  version INTEGER NOT NULL, path TEXT NOT NULL UNIQUE, snapshot TEXT NOT NULL,
  state TEXT NOT NULL DEFAULT 'reserved', sha256 TEXT, drive_id TEXT, created REAL NOT NULL);
@@ -92,7 +100,7 @@ CREATE TABLE jobs(id TEXT PRIMARY KEY, kind TEXT NOT NULL, target TEXT NOT NULL,
 CREATE TABLE oauth(state TEXT PRIMARY KEY, expires REAL NOT NULL);
 CREATE INDEX receipt_group ON receipts(group_id, page_order);
 CREATE INDEX job_queue ON jobs(state, available, lease_until);
-PRAGMA user_version=1;
+PRAGMA user_version=2;
 """
 
 
@@ -106,7 +114,12 @@ class Store:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
             if version == 0:
                 connection.executescript("BEGIN IMMEDIATE;" + SCHEMA + "COMMIT;")
-            elif version != 1:
+            elif version == 1:
+                connection.execute("ALTER TABLE receipts ADD COLUMN field_source TEXT NOT NULL DEFAULT 'unresolved'")
+                connection.execute("ALTER TABLE receipts ADD COLUMN timestamp_review INTEGER NOT NULL DEFAULT 1")
+                connection.execute("UPDATE receipts SET field_source='manual',timestamp_review=0 WHERE date IS NOT NULL AND time IS NOT NULL")
+                connection.execute("PRAGMA user_version=2")
+            elif version != 2:
                 raise RuntimeError("Unsupported database schema; use the matching application version")
         os.chmod(self.database, 0o600)
 

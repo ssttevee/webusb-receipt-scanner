@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:net";
@@ -13,7 +13,7 @@ import { installEpsonFixture } from "./epson-usb-fixture.mjs";
 const root = fileURLToPath(new URL("../", import.meta.url));
 const sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 
-async function environment(callback, fixture = false) {
+async function environment(callback, fixture = false, ocr = false) {
   const directory = await mkdtemp(join(process.env.APP_TEST_TEMP || tmpdir(), "receipt-app-test-"));
   const socket = createServer().listen(0, "127.0.0.1");
   await once(socket, "listening");
@@ -21,7 +21,7 @@ async function environment(callback, fixture = false) {
   await new Promise(resolve => socket.close(resolve));
   const origin = `http://127.0.0.1:${port}`;
   const server = spawn(process.env.APP_TEST_PYTHON || "python3", ["-m", "server.run"], {
-    cwd: root, env: { ...process.env, PORT: String(port), APP_PUBLIC_URL: origin, OCR_ENABLED: "0",
+    cwd: root, env: { ...process.env, PORT: String(port), APP_PUBLIC_URL: origin, OCR_ENABLED: ocr ? "1" : "0",
       STATE_DIR: join(directory, "state"), WORK_DIR: join(directory, "work"), ARCHIVE_DIR: join(directory, "archive"),
       DRIVE_CLIENT_ID: "", DRIVE_CLIENT_SECRET: "", DRIVE_ROOT_ID: "" }, stdio: ["ignore", "pipe", "pipe"],
   });
@@ -120,4 +120,34 @@ test("production capture UI uses the compiled Epson backend and transfers an unc
     assert.ok(raw.every(byte => byte === 170));
     assert.match(await page.locator(".capture-panel").textContent(), /0 browser copies pending/);
   }, true);
+});
+
+test("OCR proposals prefill editable fields, expose source strips and require explicit review", {
+  timeout: 120000, skip: spawnSync("tesseract", ["--version"]).status !== 0,
+}, async () => {
+  await environment(async ({ page, origin }) => {
+    const png = await page.evaluate(() => {
+      const canvas = document.createElement("canvas"); canvas.width = 640; canvas.height = 1200;
+      const context = canvas.getContext("2d"); context.fillStyle = "white"; context.fillRect(0, 0, 640, 1200);
+      context.fillStyle = "black"; context.font = "32px sans-serif";
+      context.fillText("Transaction", 30, 80); context.fillText("2026-09-14 17:21:30", 30, 150); context.fillText("BOTTOM", 30, 1150);
+      return canvas.toDataURL("image/png").split(",")[1];
+    });
+    await page.locator('input[type="file"]').setInputFiles({ name: "ocr-fixture.png", mimeType: "image/png", buffer: Buffer.from(png, "base64") });
+    await page.waitForFunction(() => document.querySelector(".proposal strong")?.textContent.includes("OCR timestamp proposal"), null, { timeout: 30000 });
+    assert.equal(await page.getByLabel("Transaction date", { exact: true }).inputValue(), "2026-09-14");
+    assert.equal(await page.getByLabel("Transaction time", { exact: true }).inputValue(), "17:21:30");
+    await page.locator(".proposal summary").click();
+    await page.getByRole("button", { name: /Inspect source at row/ }).first().click();
+    await page.waitForFunction(() => document.querySelector(".strip img")?.complete && document.querySelector(".strip img").naturalWidth === 640);
+    const before = await (await fetch(`${origin}/api/state`)).json();
+    assert.equal(before.groups[0].receipts[0].timestamp_review, 1);
+    await page.getByLabel("Physical bottom is present").check();
+    await page.getByLabel("Selected image is readable").check();
+    await page.getByRole("button", { name: "Save review", exact: true }).click();
+    await page.waitForFunction(() => document.querySelector('[role="status"]').textContent.includes("Review saved"));
+    const after = await (await fetch(`${origin}/api/state`)).json();
+    assert.equal(after.groups[0].receipts[0].timestamp_review, 0);
+    assert.equal(after.groups[0].receipts[0].field_source, "manual");
+  }, false, true);
 });
