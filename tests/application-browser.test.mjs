@@ -151,3 +151,34 @@ test("OCR proposals prefill editable fields, expose source strips and require ex
     assert.equal(after.groups[0].receipts[0].field_source, "manual");
   }, false, true);
 });
+
+test("fallback provenance and both source branches remain visible in staging", { timeout: 120000 }, async () => {
+  await environment(async ({ page }) => {
+    await page.route("**/api/receipts/*/evidence", async route => {
+      const response = await route.fetch();
+      const body = await response.json();
+      if (body.processing) {
+        body.processing.extraction = { version: "fixture", status: "proposed", issues: [],
+          selected: { date: "2026-09-14", time: "17:21" },
+          routing: { selected_engine: "rapidocr", primary_issues: ["ocr_disagreement"] },
+          candidates: ["primary", "fallback"].map(branch => ({ id: `${branch}:fixture`, dates: ["2026-09-14"], time: "17:21", issues: [],
+            sources: [{ text: `${branch} source <script>untrusted</script>`, pass: `${branch}/discovery`, box: [10, 100, 200, 130], ocr_confidence: 90 }] })) };
+        body.processing.ocr = { fallback: { state: "accepted", reason: null, seconds: 1.25 } };
+      }
+      await route.fulfill({ response, json: body });
+    });
+    const png = await page.evaluate(() => {
+      const canvas = document.createElement("canvas"); canvas.width = 320; canvas.height = 1200;
+      const context = canvas.getContext("2d"); context.fillStyle = "white"; context.fillRect(0, 0, 320, 1200);
+      return canvas.toDataURL("image/png").split(",")[1];
+    });
+    await page.locator('input[type="file"]').setInputFiles({ name: "provenance.png", mimeType: "image/png", buffer: Buffer.from(png, "base64") });
+    await page.getByText("RapidOCR fallback supplied this proposal. Inspect both engine source lists.", { exact: true }).waitFor();
+    assert.match(await page.locator(".proposal").textContent(), /Primary OCR: ocr disagreement/);
+    await page.locator(".proposal summary").click();
+    assert.equal(await page.locator(".candidate").count(), 2);
+    assert.equal(await page.locator(".candidate script").count(), 0);
+    await page.getByRole("button", { name: "Inspect source at row 100", exact: true }).last().click();
+    await page.waitForFunction(() => document.querySelector(".strip img")?.complete && document.querySelector(".strip img").naturalWidth === 320);
+  });
+});

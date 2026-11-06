@@ -15,6 +15,9 @@ from PIL import Image
 from .benchmark import score
 from .extraction import VERSION as EXTRACTOR_VERSION
 from .ocr_backends import RapidCPU, TesseractAPI
+from .ocr_fallback import FallbackClient
+from .ocr_models import MODELS
+from .ocr_pipeline import VERSION as FALLBACK_VERSION, recognize_receipt
 from .recognition import VERSION as OCR_VERSION, recognize
 from .storage import digest, durable_write, encode
 
@@ -122,30 +125,37 @@ def candidate_match(labels, extraction):
 def code_fingerprint(directory=None):
     directory = Path(directory) if directory else Path(__file__).parent
     return {name: digest(directory / name) for name in
-            ("recognition.py", "extraction.py", "ocr_backends.py", "benchmark.py", "ocr_compare.py")}
+            ("recognition.py", "extraction.py", "ocr_backends.py", "benchmark.py", "ocr_compare.py", "ocr_pipeline.py", "ocr_fallback.py")}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--samples", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--backend", choices=("cli", "tesserocr", "rapidocr"), required=True)
+    parser.add_argument("--backend", choices=("cli", "tesserocr", "rapidocr", "hybrid"), required=True)
     parser.add_argument("--review-cases", type=Path)
     parser.add_argument("--baseline", type=Path, help="Private prior results for failure classification only")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--limit", type=int)
     parser.add_argument("--models", type=Path, default=Path("/opt/receipt-ocr-models"))
     parser.add_argument("--hardware", default="Unspecified; not a NAS throughput measurement")
+    parser.add_argument("--fallback-timeout", type=int, default=45)
+    parser.add_argument("--fallback-memory-mib", type=int, default=4096)
     args = parser.parse_args()
     entries, cohort_hash = freeze(args.samples, args.output)
     if args.limit:
         entries = entries[:args.limit]
     cases = json.loads(args.review_cases.read_text()) if args.review_cases else {}
     # Expected labels/cases are used below by the scorer, never by the backend.
-    backend = TesseractAPI() if args.backend == "tesserocr" else RapidCPU(args.models) if args.backend == "rapidocr" else None
+    backend = TesseractAPI() if args.backend in ("tesserocr", "hybrid") else RapidCPU(args.models) if args.backend == "rapidocr" else None
+    fallback = FallbackClient(models=args.models, timeout=args.fallback_timeout, memory_mib=args.fallback_memory_mib) if args.backend == "hybrid" else None
     code = code_fingerprint()
     experiment = {"cohort_sha256": cohort_hash, "backend": args.backend, "code_sha256": code,
                   "models": backend.descriptor if backend else {"kind": "cli"}, "date_order": None, "century": None}
+    if fallback:
+        experiment["fallback"] = {"version": FALLBACK_VERSION, "timeout_seconds": args.fallback_timeout,
+                                  "memory_limit_mib": args.fallback_memory_mib,
+                                  "model_sha256": {kind: model["sha256"] for kind, model in MODELS.items()}}
     experiment_hash = hashlib.sha256(encode(experiment).encode()).hexdigest()
     output = args.output / args.backend
     records = []
@@ -163,9 +173,9 @@ def main():
                     image, manifest = decode(args.samples / entry["bundle"])
                     if manifest["id"] != entry["id"] or manifest["source"]["sha256"] != entry["sha256"] or hashlib.sha256(encode(manifest["labels"]).encode()).hexdigest() != entry["labels_sha256"]:
                         raise ValueError("A sample changed after the cohort was frozen")
-                    ocr = recognize(image, dpi=manifest["source"]["scanner"]["resolution"]["y"],
-                                    languages=manifest["labels"].get("languages") or ["eng"],
-                                    output=output / entry["prefix"], backend=backend)
+                    options = {"dpi": manifest["source"]["scanner"]["resolution"]["y"],
+                               "languages": manifest["labels"].get("languages") or ["eng"], "output": output / entry["prefix"]}
+                    ocr = recognize_receipt(image, primary_backend=backend, fallback=fallback, **options) if fallback else recognize(image, backend=backend, **options)
                     image.close()
                 elapsed = time.perf_counter() - started
                 extraction = ocr["extraction"]
@@ -188,6 +198,8 @@ def main():
             records.append(record)
             print(f"{args.backend} {index}/{len(entries)} {entry['prefix']}: {record['ocr']['extraction']['status']}", flush=True)
     finally:
+        if fallback:
+            fallback.close()
         if backend:
             backend.close()
     if inventory(args.samples) != freeze(args.samples, args.output)[0]:
@@ -211,6 +223,10 @@ def main():
                "review_categories": dict(Counter(record["review_category"] for record in records if record["review_category"])),
                "baseline_review_categories": dict(Counter(record["baseline_review_category"] for record in records if record["baseline_review_category"])),
                "scope": "Inspected development corpus; no held-out accuracy or NAS performance claim"}
+    if fallback:
+        summary["fallback_states"] = dict(Counter(record["ocr"]["fallback"]["state"] for record in records))
+        summary["fallback_skip_reasons"] = dict(Counter(record["ocr"]["fallback"]["reason"] for record in records if record["ocr"]["fallback"]["state"] == "skipped"))
+        summary["fallback_seconds"] = distribution([record["ocr"]["fallback"]["seconds"] for record in records if record["ocr"]["fallback"]["state"] != "skipped"])
     durable_write(output / "summary.json", (json.dumps(summary, indent=2) + "\n").encode())
     print(json.dumps(summary, indent=2), flush=True)
 

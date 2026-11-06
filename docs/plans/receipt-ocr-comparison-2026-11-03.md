@@ -2,6 +2,8 @@
 
 Date: 2026-11-03
 
+Follow-up: the [fresh selective-fallback experiment](receipt-selective-fallback-2026-11-06.md) is complete and packaged as an optional application image. The standalone measurements below remain the historical comparison.
+
 Related: [Extraction baseline](receipt-extraction-baseline-2026-11-03.md), [runtime contract](../application-runtime.md), RA-05 / RA-10 / RA-12.
 
 ## Decision

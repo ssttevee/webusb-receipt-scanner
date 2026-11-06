@@ -18,6 +18,8 @@ If Drive is offline during path preparation, the UI records that its collision c
 
 This slice has one reference master, automatic timestamp proposals, mandatory confirmation and immutable approved exports. The [CPU OCR comparison](plans/receipt-ocr-comparison-2026-11-03.md) selects persistent Tesseract for the Docker worker. Improved OCR recall, image enhancement/ranking, production sample pinning, approved-group revisions, batch approval and richer cleanup policies remain planned. It does not satisfy all RA release acceptance checks.
 
+The optional `receipt-scanner:ocr` image adds a [measured selective RapidOCR fallback](plans/receipt-selective-fallback-2026-11-06.md). It preserves supported primary proposals and retains policy/invalid-source cases for review. A bounded child process handles other unresolved receipts. The inspected-corpus result is 31 matching proposals and 22 review cases; unseen accuracy and NAS throughput remain open.
+
 The Docker worker retains at most three Tesseract language profiles. It clears adaptive state and image buffers between passes and releases profiles on eviction/shutdown. The API extension uses the same system Tesseract 5.3.0 library and language data as the CLI. Corpus OCR text/boxes and timestamp proposals match the earlier path exactly; measured emulated-workstation runtime fell by about 35%.
 
 ### Timestamp policy and evidence
@@ -58,6 +60,10 @@ Files use temporary writes on the destination filesystem, fsync, finalization an
 | `OCR_ENABLED` | `1`; `0` retains manual staging without OCR |
 | `OCR_BACKEND` | Docker: `tesserocr`; native: `cli`. Both paths require explicit timestamp confirmation |
 | `TESSDATA_PREFIX` | Docker: `/usr/share/tesseract-ocr/5/tessdata`; native API mode needs the actual installed data directory |
+| `OCR_FALLBACK` | `none` in `:dev`; `rapidocr` in the optional `:ocr` image |
+| `OCR_FALLBACK_TIMEOUT_SECONDS` | `45`; 1–120 seconds for child startup/inference/acknowledgment |
+| `OCR_FALLBACK_MEMORY_MIB` | `4096`; Linux child address-space cap, range 1024–6144 MiB |
+| `RAPIDOCR_MODEL_DIR` | `/opt/receipt-ocr-models`; enhanced image includes verified assets |
 | `DATE_ORDER` | Unset; optional `MDY`, `DMY` or `YMD` for an explicitly known intake convention |
 | `TWO_DIGIT_YEAR_CENTURY` | Unset; optional `1900` or `2000`; no implicit century |
 | `DRIVE_CLIENT_ID` | Optional Google OAuth web client ID |
@@ -100,7 +106,7 @@ Native OCR needs Tesseract and the selected packs installed. Native API mode add
 ## Checks and recovery
 
 ```sh
-.venv/bin/python -m pytest tests/test_application.py tests/test_drive.py tests/test_extraction.py tests/test_ocr_comparison.py -q
+.venv/bin/python -m pytest tests/test_application.py tests/test_drive.py tests/test_extraction.py tests/test_ocr_comparison.py tests/test_ocr_fallback.py -q
 npm run test:samples
 npx playwright install chromium
 APP_TEST_PYTHON="$PWD/.venv/bin/python" npm run test:app-browser
@@ -123,4 +129,6 @@ Backend fault-path tests and browser end-to-end checks cover lost acknowledgment
 
 The [extraction baseline](plans/receipt-extraction-baseline-2026-11-03.md) records corpus measurements and the repeatable benchmark command. The browser suite includes a native Tesseract proposal/source-strip check when Tesseract is installed. Python checks cover parser edge cases, proposal confirmation, automatic grouping, schema migration, stale approval, deletion and recovery. No live Drive account or external model was contacted.
 
-The current OCR increment passes **59 Python tests** and **3 application browser tests**. Its container checks verify the persistent backend, version, restart recovery and exact real-receipt PDF pixels. Tests include profile reuse/reset, coordinate mapping, checksum and cohort-drift cases. The comparison report retains the measured 53-receipt engine results and emulated-hardware limits. Existing collector stream/server checks passed in the preceding application slice; raw capture does not change in this increment.
+The persistent-API increment passed **59 Python tests** and **3 application browser tests**. Its container checks verify the persistent backend, version, restart recovery and exact real-receipt PDF pixels. Tests include profile reuse/reset, coordinate mapping, checksum and cohort-drift cases. The comparison report retains the measured 53-receipt engine results and emulated-hardware limits. Existing collector stream/server checks passed in the preceding application slice; raw capture does not change in this increment.
+
+The selective-fallback increment passes **74 Python tests** and **4 application browser tests**. Its enhanced-image checks verify a real recovery and forced deadline/child termination, followed by manual approval and exact source-pixel PDF checks. These checks use disposable volumes and preserve the private input bundles.

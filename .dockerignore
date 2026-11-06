@@ -1,9 +1,11 @@
 *
 !Dockerfile
 !Dockerfile.ocr-benchmark
+!Dockerfile.ocr
 !requirements.lock
 !requirements-ocr.lock
 !requirements-tesserocr.lock
+!requirements-rapidocr.lock
 !package.json
 !package-lock.json
 !raw-scanner.mjs

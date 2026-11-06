@@ -99,7 +99,7 @@ Acceptance:
 
 Type: Research. Size: M. Depends on: RA-01; RA-04 for NAS performance measurements.
 
-Progress: the [53-sample extraction baseline](receipt-extraction-baseline-2026-11-03.md) and [CPU OCR comparison](receipt-ocr-comparison-2026-11-03.md) cover corrected labels and all required language profiles. Persistent Tesseract matches CLI OCR/fields on all 53 samples, proposes 22 timestamps and reduces measured emulated runtime by about 35%; it is now the Docker default. RapidOCR proposes 29 correct date/minute values but costs more runtime/memory. Selective fallback, unseen evaluation and actual NAS throughput remain open.
+Progress: the [extraction baseline](receipt-extraction-baseline-2026-11-03.md), [CPU comparison](receipt-ocr-comparison-2026-11-03.md) and [fresh selective-fallback run](receipt-selective-fallback-2026-11-06.md) cover 53 corrected samples. The fast Docker image uses persistent Tesseract. The optional fallback image preserves all 22 primary proposals and adds nine, leaving 22 in review; its measured median is 2.23 seconds under emulation. Unseen evaluation and actual NAS throughput remain open.
 
 Work:
 - Compare current Tesseract, a server OCR option, and a suitable local document model where hardware permits.
@@ -198,6 +198,8 @@ Acceptance:
 Type: Feature. Size: M. Depends on: RA-08.
 
 Progress: the SQLite queue and separate worker implement immediate processing, renewable leases, three bounded attempts, manual retry, approval, post-commit cleanup and Drive jobs. Tests cover lease recovery, failed archive writes, filesystem-finalization replay and decode replay after approved cleanup. The Docker worker now owns a bounded persistent Tesseract profile cache, with adaptive/per-image state reset and eviction/shutdown cleanup. NAS throughput remains unmeasured.
+
+Fallback progress: the optional RapidOCR child has a parent-enforced deadline, Linux address-space/CPU limits, parent-death cleanup, bounded checksum-verified evidence transfer and restart after failure. Tests cover a hung child, stale job/checksum responses and manual review after timeout. A fallback failure does not discard staging data or force another full OCR job.
 
 Work:
 - Add persisted jobs for image processing, extraction, export, and Drive transfer.

@@ -145,7 +145,7 @@ def test_primary_review_categories_keep_policy_and_source_defects_separate():
 
 
 def test_comparison_cache_fingerprint_includes_scoring_and_metrics_code(tmp_path):
-    for name in ("recognition.py", "extraction.py", "ocr_backends.py", "benchmark.py", "ocr_compare.py"):
+    for name in ("recognition.py", "extraction.py", "ocr_backends.py", "benchmark.py", "ocr_compare.py", "ocr_pipeline.py", "ocr_fallback.py"):
         (tmp_path / name).write_text("original")
     first = code_fingerprint(tmp_path)
     (tmp_path / "benchmark.py").write_text("different scoring")

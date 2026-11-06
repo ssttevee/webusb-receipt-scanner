@@ -26,6 +26,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", default="receipt-scanner:dev")
     parser.add_argument("--bundle", help="Optional private scanner-raw sample, used only inside disposable test volumes")
+    parser.add_argument("--fallback-timeout", type=int)
+    parser.add_argument("--expect-fallback-state", choices=("accepted", "no_proposal", "skipped", "timeout"))
+    parser.add_argument("--languages", nargs="+", choices=("eng", "fra", "jpn", "chi_tra", "chi_sim"),
+                        default=["eng", "fra", "jpn", "chi_tra", "chi_sim"])
     args = parser.parse_args()
     assert docker("image", "inspect", args.image, "--format", "{{.Architecture}}") == "amd64"
     with socket.socket() as listener:
@@ -37,8 +41,9 @@ def main():
 
     def start():
         mounts = [arg for path, volume in volumes.items() for arg in ("-v", f"{volume}:/{path}")]
+        environment = ["-e", f"OCR_FALLBACK_TIMEOUT_SECONDS={args.fallback_timeout}"] if args.fallback_timeout else []
         docker("run", "-d", "--platform", "linux/amd64", "--name", name, "--memory", "8g", "-p", f"127.0.0.1:{port}:8000",
-               "-e", f"APP_PUBLIC_URL={origin}", *mounts, args.image)
+               "-e", f"APP_PUBLIC_URL={origin}", *environment, *mounts, args.image)
         for _ in range(150):
             try:
                 if request("GET", "/api/health")["ok"]:
@@ -78,11 +83,11 @@ def main():
     identity = str(uuid.uuid4())
     checksum = hashlib.sha256(data).hexdigest()
     manifest.update(id=identity, byte_length=len(data), sha256=checksum, transport_complete=True,
-                    languages=["eng", "fra", "jpn", "chi_tra", "chi_sim"])
+                    languages=args.languages)
     try:
         start()
         packs = docker("exec", name, "tesseract", "--list-langs")
-        assert all(language in packs for language in manifest["languages"])
+        assert all(language in packs for language in ("eng", "fra", "jpn", "chi_tra", "chi_sim"))
         session = request("POST", "/api/captures", manifest)
         chunk_size = session["chunk_size"]
         request("PUT", f"/api/captures/{identity}/chunks/0", data[:chunk_size], binary=True)
@@ -108,6 +113,16 @@ def main():
         assert evidence["processing"]["ocr"]["state"] == "done"
         assert evidence["processing"]["ocr"]["backend"]["kind"] == "tesserocr"
         assert evidence["processing"]["ocr"]["engine"] == "tesseract 5.3.0"
+        if args.expect_fallback_state:
+            fallback = evidence["processing"]["ocr"]["fallback"]
+            assert fallback["state"] == args.expect_fallback_state, fallback["state"]
+            if fallback["state"] == "accepted":
+                assert evidence["processing"]["extraction"]["routing"]["selected_engine"] == "rapidocr"
+                assert fallback["linux_limits"] is True
+            if fallback["state"] == "timeout":
+                assert fallback["child_stopped"] is True and evidence["processing"]["extraction"]["selected"] is None
+                if fallback["child_pid"]:
+                    docker("exec", name, "python", "-c", f"from pathlib import Path; assert not Path('/proc/{fallback['child_pid']}').exists()")
         health_command = json.loads(docker("inspect", name, "--format", "{{json .Config.Healthcheck.Test}}"))
         assert health_command[0] == "CMD-SHELL"
         docker("exec", name, "sh", "-c", health_command[1])

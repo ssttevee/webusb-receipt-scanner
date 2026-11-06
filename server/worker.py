@@ -24,7 +24,7 @@ def image_bytes(image, format, **kwargs):
     return buffer.getvalue()
 
 
-def process(store, identity, ocr_backend=None):
+def process(store, identity, ocr_backend=None, fallback=None):
     settings = store.settings
     with store.transaction() as connection:
         row = connection.execute("SELECT * FROM captures WHERE id=?", (identity,)).fetchone()
@@ -63,8 +63,15 @@ def process(store, identity, ocr_backend=None):
     evidence = {"master_sha256": digest(master), "master_kind": "lossless_reference_v1",
                 "date_time_source": "manual_review_required", "ocr": None}
     if settings.ocr:
+        ocr_started = time.monotonic()
         evidence["ocr"] = recognize(image, dpi=manifest["dpi_y"], languages=manifest["languages"], output=directory / "ocr",
                                     date_order=settings.date_order, century=settings.year_century, backend=ocr_backend)
+        if fallback is not None:
+            from .ocr_pipeline import route
+            evidence["ocr"] = route(evidence["ocr"], fallback, master, output=directory / "ocr" / "fallback",
+                                    dpi=manifest["dpi_y"], languages=manifest["languages"], date_order=settings.date_order,
+                                    century=settings.year_century)
+            evidence["ocr"]["seconds"] = round(time.monotonic() - ocr_started, 6)
         evidence["extraction"] = evidence["ocr"].pop("extraction")
         evidence["date_time_source"] = evidence["extraction"]["version"]
     image.close()
@@ -163,7 +170,7 @@ def cleanup(store, identity):
             sync_directory(directory)
 
 
-def run_one(store, drive=None, ocr_backend=None):
+def run_one(store, drive=None, ocr_backend=None, fallback=None):
     job = store.claim()
     if not job:
         return False
@@ -180,7 +187,7 @@ def run_one(store, drive=None, ocr_backend=None):
     thread.start()
     try:
         if job["kind"] == "process":
-            process(store, job["target"], ocr_backend)
+            process(store, job["target"], ocr_backend, fallback)
         elif job["kind"] == "approve":
             finalize_export(store, job["target"])
         elif job["kind"] == "cleanup":
@@ -224,15 +231,22 @@ def main():
     if store.settings.ocr and store.settings.ocr_backend == "tesserocr":
         from .ocr_backends import TesseractAPI
         backend = TesseractAPI(tessdata=os.getenv("TESSDATA_PREFIX", "/usr/share/tesseract-ocr/5/tessdata"))
+    fallback = None
+    if store.settings.ocr and store.settings.ocr_fallback == "rapidocr":
+        from .ocr_fallback import FallbackClient
+        fallback = FallbackClient(models=os.getenv("RAPIDOCR_MODEL_DIR", "/opt/receipt-ocr-models"),
+                                  timeout=store.settings.fallback_timeout, memory_mib=store.settings.fallback_memory_mib)
     last_heartbeat = 0
     try:
         while not stop.is_set():
             if time.time() - last_heartbeat > 10:
                 durable_write(store.settings.state / "worker-heartbeat", str(time.time()).encode())
                 last_heartbeat = time.time()
-            if not run_one(store, drive, backend):
+            if not run_one(store, drive, backend, fallback):
                 stop.wait(1)
     finally:
+        if fallback:
+            fallback.close()
         if backend:
             backend.close()
 

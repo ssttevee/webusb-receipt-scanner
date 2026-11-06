@@ -376,3 +376,48 @@ def test_schema_one_migration_preserves_manual_timestamps(tmp_path):
         assert manual["field_source"] == "manual" and manual["timestamp_review"] == 0
         missing = dict(connection.execute("SELECT * FROM receipts WHERE id='missing'").fetchone())
         assert missing["time"] is None and missing["timestamp_review"] == 1
+
+
+def test_worker_fallback_proposal_retains_sources_and_requires_confirmation(runtime, monkeypatch):
+    from test_ocr_fallback import Client, evidence
+    import server.worker as worker
+    client, store = runtime
+    manifest, original = capture(client, store)
+    primary = evidence(supported=False)
+    monkeypatch.setattr(worker, "recognize", lambda *args, **kwargs: primary)
+    store.settings.ocr = True
+    with store.transaction() as connection:
+        connection.execute("UPDATE receipts SET state='queued'")
+        connection.execute("UPDATE jobs SET state='pending',available=0 WHERE kind='process'")
+    fallback = Client(evidence())
+    assert run_one(store, fallback=fallback)
+    group = state(client)["groups"][0]
+    receipt = group["receipts"][0]
+    assert (receipt["date"], receipt["time"]) == ("2026-09-14", "17:21:30")
+    assert receipt["timestamp_review"] == 1 and receipt["field_source"] == "ocr"
+    result = client.get(f"/api/receipts/{manifest['id']}/evidence").json()["processing"]
+    assert result["ocr"]["fallback"]["state"] == "accepted"
+    assert result["extraction"]["routing"]["selected_engine"] == "rapidocr"
+    assert result["ocr"]["fallback"]["primary_extraction"] == primary["extraction"]
+    assert (store.settings.work / "captures" / manifest["id"] / "original.bin").read_bytes() == original
+    with store.transaction() as connection:
+        connection.execute("UPDATE receipts SET complete=1,readable=1")
+    assert client.post(f"/api/groups/{group['id']}/prepare", json={"version": group["version"]}).status_code == 409
+    assert review(client, manifest["id"]).status_code == 200
+
+
+def test_worker_fallback_timeout_retains_staging_and_manual_review(runtime, monkeypatch):
+    from test_ocr_fallback import Client, evidence
+    import server.worker as worker
+    client, store = runtime
+    manifest, original = capture(client, store)
+    monkeypatch.setattr(worker, "recognize", lambda *args, **kwargs: evidence(supported=False))
+    store.settings.ocr = True
+    with store.transaction() as connection:
+        connection.execute("UPDATE receipts SET state='queued'")
+        connection.execute("UPDATE jobs SET state='pending',available=0 WHERE kind='process'")
+    assert run_one(store, fallback=Client(None, "timeout"))
+    receipt = state(client)["groups"][0]["receipts"][0]
+    assert receipt["state"] == "ready" and receipt["date"] is None and receipt["time"] is None
+    assert (store.settings.work / "captures" / manifest["id"] / "original.bin").read_bytes() == original
+    assert review(client, manifest["id"]).status_code == 200

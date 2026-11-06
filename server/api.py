@@ -99,7 +99,8 @@ def create_app(settings=None, drive=None):
             connection.execute("SELECT 1").fetchone()
         return {"ok": True, "schema": 2, "driver_ready": (ROOT / "scanner-driver/build/provenance.json").exists(),
                 "free_work_bytes": shutil.disk_usage(settings.work).free, "ocr_enabled": settings.ocr,
-                "ocr_backend": settings.ocr_backend}
+                "ocr_backend": settings.ocr_backend, "ocr_fallback": settings.ocr_fallback,
+                "fallback_timeout_seconds": settings.fallback_timeout}
 
     @app.post("/api/captures")
     def begin(manifest: Capture):

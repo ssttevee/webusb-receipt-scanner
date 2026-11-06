@@ -17,7 +17,9 @@ type Receipt = { id: string; group_id: string; date: string | null; time: string
   field_source: "manual" | "ocr" | "unresolved"; timestamp_review: number };
 type Candidate = { id: string; dates: string[]; time: string | null; issues: string[];
   sources: { text: string; box: number[]; ocr_confidence: number; pass: string }[] };
-type Extraction = { version: string; status: string; issues: string[]; selected: { date: string; time: string } | null; candidates: Candidate[] };
+type Extraction = { version: string; status: string; issues: string[]; selected: { date: string; time: string } | null; candidates: Candidate[];
+  routing?: { selected_engine: string | null; primary_issues: string[] } };
+type FallbackInfo = { state: string; reason: string | null; seconds: number };
 type Export = { id: string; path: string; state: string; drive_id: string | null };
 type Group = { id: string; version: number; state: string; manual: number; receipts: Receipt[]; exports: Export[] };
 type Job = { id: string; kind: string; target: string; state: string; attempts: number; error: string | null };
@@ -89,14 +91,16 @@ function ReceiptEditor({ receipt, group, refresh, selected, select, report }: {
   const [height, setHeight] = useState(512);
   const [evidence, setEvidence] = useState<unknown>(null);
   const [extraction, setExtraction] = useState<Extraction | null>(null);
+  const [fallbackInfo, setFallbackInfo] = useState<FallbackInfo | null>(null);
   const [busy, setBusy] = useState(false);
   const [baseVersion, setBaseVersion] = useState(group.version);
   const stale = baseVersion !== group.version;
   useEffect(() => {
     if (receipt.state !== "ready") return;
     setBaseVersion(group.version); setDate(receipt.date ?? ""); setClock(receipt.time ?? "");
-    void api<{ capture: { height: number }; processing: { extraction?: Extraction } | null }>(`/api/receipts/${receipt.id}/evidence`, undefined, "GET").then(result => {
+    void api<{ capture: { height: number }; processing: { extraction?: Extraction; ocr?: { fallback?: FallbackInfo } } | null }>(`/api/receipts/${receipt.id}/evidence`, undefined, "GET").then(result => {
       setHeight(result.capture.height); setEvidence(result.processing); setExtraction(result.processing?.extraction ?? null);
+      setFallbackInfo(result.processing?.ocr?.fallback ?? null);
     }).catch(error => report(String(error)));
   }, [receipt.state]);
   const editable = group.state === "staging" && receipt.state === "ready";
@@ -112,6 +116,9 @@ function ReceiptEditor({ receipt, group, refresh, selected, select, report }: {
       <span class="badge">{receipt.state}</span></header>
     {receipt.state === "ready" && <img class="thumbnail" src={`/api/receipts/${receipt.id}/image`} alt={`Receipt ${receipt.id.slice(0, 8)} preview`} loading="lazy" onClick={inspect} />}
     {extraction && <section class="proposal"><strong>{extraction.selected ? "OCR timestamp proposal — confirm against the scan" : "Timestamp needs manual review"}</strong>
+      {extraction.routing?.selected_engine === "rapidocr" && <p>RapidOCR fallback supplied this proposal. Inspect both engine source lists.</p>}
+      {extraction.routing?.primary_issues.length ? <p class="muted">Primary OCR: {extraction.routing.primary_issues.map(issue => issue.replaceAll("_", " ")).join(" · ")}</p> : null}
+      {fallbackInfo && fallbackInfo.reason !== "primary_supported" && <p class="muted">Fallback: {fallbackInfo.state.replaceAll("_", " ")} · {fallbackInfo.seconds.toFixed(1)} seconds{fallbackInfo.reason ? ` · ${fallbackInfo.reason.replaceAll("_", " ")}` : ""}</p>}
       {receipt.field_source === "manual" && <p>Your saved fields take priority over the OCR proposal.</p>}
       {extraction.issues.length > 0 && <p class="muted">{extraction.issues.map(issue => issue.replaceAll("_", " ")).join(" · ")}</p>}
       <details><summary>Timestamp candidates & source regions ({extraction.candidates.length})</summary>

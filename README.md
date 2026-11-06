@@ -35,6 +35,14 @@ See the [53-sample extraction baseline](docs/plans/receipt-extraction-baseline-2
 
 The Docker worker now uses persistent Tesseract APIs. The [CPU OCR comparison](docs/plans/receipt-ocr-comparison-2026-11-03.md) records the speed/memory tradeoff and the RapidOCR challenger results.
 
+For selective RapidOCR fallback, build `Dockerfile.ocr` after the base image:
+
+```sh
+docker build --platform linux/amd64 -f Dockerfile.ocr -t receipt-scanner:ocr .
+```
+
+Use `receipt-scanner:ocr` with the same run command and mounts. Its [combined-corpus result](docs/plans/receipt-selective-fallback-2026-11-06.md) is 31 matching proposals and 22 review cases. The fallback has a hard inference deadline and a bounded child process. The base `:dev` image keeps the smaller primary-only path.
+
 See [runtime and development instructions](docs/application-runtime.md) for volumes, OAuth, checks, recovery and current verification limits.
 
 ## Workstation sample collector

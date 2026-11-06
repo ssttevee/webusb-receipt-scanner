@@ -1,0 +1,11 @@
+ARG BASE_IMAGE=receipt-scanner:dev
+FROM ${BASE_IMAGE}
+USER root
+COPY requirements-rapidocr.lock ./
+RUN pip install --no-cache-dir --require-hashes -r requirements-rapidocr.lock
+COPY server ./server
+RUN python -m server.ocr_models --output /opt/receipt-ocr-models
+ENV OCR_FALLBACK=rapidocr OCR_FALLBACK_TIMEOUT_SECONDS=45 OCR_FALLBACK_MEMORY_MIB=4096 \
+    RAPIDOCR_MODEL_DIR=/opt/receipt-ocr-models
+USER 10001:10001
+CMD ["python", "-m", "server.run"]
