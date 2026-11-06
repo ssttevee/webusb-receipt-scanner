@@ -1,0 +1,16 @@
+ARG BASE_IMAGE=receipt-scanner:dev
+FROM ${BASE_IMAGE}
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential pkg-config libtesseract-dev libleptonica-dev libgl1 \
+    && rm -rf /var/lib/apt/lists/*
+COPY requirements-ocr.lock ./
+RUN pip install --no-cache-dir Cython==3.3.1 setuptools==80.9.0 wheel==0.45.1 \
+    && pip install --no-cache-dir --require-hashes --no-build-isolation --no-binary=tesserocr -r requirements-ocr.lock
+COPY server ./server
+RUN python -m server.ocr_models --output /opt/receipt-ocr-models \
+    && python -c 'import tesserocr; assert "tesseract 5.3.0" in tesserocr.tesseract_version()'
+ENV TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata
+USER 10001:10001
+HEALTHCHECK NONE
+ENTRYPOINT ["python", "-m", "server.ocr_compare"]

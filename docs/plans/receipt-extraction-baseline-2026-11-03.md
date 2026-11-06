@@ -2,6 +2,8 @@
 
 Date: 2026-11-03
 
+Follow-up: the [CPU OCR comparison](receipt-ocr-comparison-2026-11-03.md) is complete. Persistent Tesseract preserves this baseline's output and is now the Docker default. RapidOCR improves development-corpus proposal coverage at a higher runtime/memory cost. This report retains the original CLI baseline measurements.
+
 Related: [Expanded corpus review](receipt-sample-review-2026-10-25.md), [runtime contract](../application-runtime.md), RA-05 / RA-12 / RA-13.
 
 ## Result

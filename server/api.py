@@ -98,7 +98,8 @@ def create_app(settings=None, drive=None):
         with store.transaction() as connection:
             connection.execute("SELECT 1").fetchone()
         return {"ok": True, "schema": 2, "driver_ready": (ROOT / "scanner-driver/build/provenance.json").exists(),
-                "free_work_bytes": shutil.disk_usage(settings.work).free, "ocr_enabled": settings.ocr}
+                "free_work_bytes": shutil.disk_usage(settings.work).free, "ocr_enabled": settings.ocr,
+                "ocr_backend": settings.ocr_backend}
 
     @app.post("/api/captures")
     def begin(manifest: Capture):

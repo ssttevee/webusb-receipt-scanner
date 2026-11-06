@@ -33,6 +33,8 @@ The application creates a lossless reference master and evidence-backed date/tim
 
 See the [53-sample extraction baseline](docs/plans/receipt-extraction-baseline-2026-11-03.md) for measured proposal coverage, review cases and limits.
 
+The Docker worker now uses persistent Tesseract APIs. The [CPU OCR comparison](docs/plans/receipt-ocr-comparison-2026-11-03.md) records the speed/memory tradeoff and the RapidOCR challenger results.
+
 See [runtime and development instructions](docs/application-runtime.md) for volumes, OAuth, checks, recovery and current verification limits.
 
 ## Workstation sample collector

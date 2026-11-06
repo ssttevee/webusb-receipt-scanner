@@ -16,7 +16,9 @@ Local and visible Drive collisions use the first available stable `-1`, `-2`, et
 
 If Drive is offline during path preparation, the UI records that its collision check was unavailable. Local approval/download/cleanup still work; delivery rechecks the filename before creating a remote file.
 
-This slice has one reference master, automatic timestamp proposals, mandatory confirmation and immutable approved exports. Warm-engine comparisons, improved OCR recall, image enhancement/ranking, production sample pinning, approved-group revisions, batch approval and richer cleanup policies remain planned. It does not satisfy all RA release acceptance checks.
+This slice has one reference master, automatic timestamp proposals, mandatory confirmation and immutable approved exports. The [CPU OCR comparison](plans/receipt-ocr-comparison-2026-11-03.md) selects persistent Tesseract for the Docker worker. Improved OCR recall, image enhancement/ranking, production sample pinning, approved-group revisions, batch approval and richer cleanup policies remain planned. It does not satisfy all RA release acceptance checks.
+
+The Docker worker retains at most three Tesseract language profiles. It clears adaptive state and image buffers between passes and releases profiles on eviction/shutdown. The API extension uses the same system Tesseract 5.3.0 library and language data as the CLI. Corpus OCR text/boxes and timestamp proposals match the earlier path exactly; measured emulated-workstation runtime fell by about 35%.
 
 ### Timestamp policy and evidence
 
@@ -54,6 +56,8 @@ Files use temporary writes on the destination filesystem, fsync, finalization an
 | --- | --- |
 | `APP_PUBLIC_URL` | `http://localhost:8000`; exact public origin |
 | `OCR_ENABLED` | `1`; `0` retains manual staging without OCR |
+| `OCR_BACKEND` | Docker: `tesserocr`; native: `cli`. Both paths require explicit timestamp confirmation |
+| `TESSDATA_PREFIX` | Docker: `/usr/share/tesseract-ocr/5/tessdata`; native API mode needs the actual installed data directory |
 | `DATE_ORDER` | Unset; optional `MDY`, `DMY` or `YMD` for an explicitly known intake convention |
 | `TWO_DIGIT_YEAR_CENTURY` | Unset; optional `1900` or `2000`; no implicit century |
 | `DRIVE_CLIENT_ID` | Optional Google OAuth web client ID |
@@ -91,12 +95,12 @@ APP_PUBLIC_URL=http://localhost:8000 \
   .venv/bin/python -m server.run
 ```
 
-Native OCR needs Tesseract and the selected packs installed. The Docker image bundles Tesseract 5.3.0 and all five required packs, so workstation-native OCR packages are not a deployment dependency. Headless simulated-device checks are not physical-scanner proof.
+Native OCR needs Tesseract and the selected packs installed. Native API mode additionally needs `tesserocr`; its wheel may bundle a different Tesseract version. The Docker image builds the extension against its own 5.3.0 library and includes all five packs, so workstation-native OCR packages are not a deployment dependency. Headless simulated-device checks are not physical-scanner proof.
 
 ## Checks and recovery
 
 ```sh
-.venv/bin/python -m pytest tests/test_application.py tests/test_drive.py tests/test_extraction.py -q
+.venv/bin/python -m pytest tests/test_application.py tests/test_drive.py tests/test_extraction.py tests/test_ocr_comparison.py -q
 npm run test:samples
 npx playwright install chromium
 APP_TEST_PYTHON="$PWD/.venv/bin/python" npm run test:app-browser
@@ -119,4 +123,4 @@ Backend fault-path tests and browser end-to-end checks cover lost acknowledgment
 
 The [extraction baseline](plans/receipt-extraction-baseline-2026-11-03.md) records corpus measurements and the repeatable benchmark command. The browser suite includes a native Tesseract proposal/source-strip check when Tesseract is installed. Python checks cover parser edge cases, proposal confirmation, automatic grouping, schema migration, stale approval, deletion and recovery. No live Drive account or external model was contacted.
 
-The current increment passes **51 Python tests** and **3 application browser tests**, plus the build/lint and synthetic/real-long-receipt amd64 container checks. Existing collector stream/server checks passed in the preceding application slice; the raw-capture implementation did not change in this increment.
+The current OCR increment passes **59 Python tests** and **3 application browser tests**. Its container checks verify the persistent backend, version, restart recovery and exact real-receipt PDF pixels. Tests include profile reuse/reset, coordinate mapping, checksum and cohort-drift cases. The comparison report retains the measured 53-receipt engine results and emulated-hardware limits. Existing collector stream/server checks passed in the preceding application slice; raw capture does not change in this increment.

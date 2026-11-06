@@ -106,6 +106,8 @@ def main():
             raise RuntimeError("Container image processing timed out")
         evidence = request("GET", f"/api/receipts/{identity}/evidence")
         assert evidence["processing"]["ocr"]["state"] == "done"
+        assert evidence["processing"]["ocr"]["backend"]["kind"] == "tesserocr"
+        assert evidence["processing"]["ocr"]["engine"] == "tesseract 5.3.0"
         health_command = json.loads(docker("inspect", name, "--format", "{{json .Config.Healthcheck.Test}}"))
         assert health_command[0] == "CMD-SHELL"
         docker("exec", name, "sh", "-c", health_command[1])

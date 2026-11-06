@@ -5,15 +5,29 @@ RUN npm ci
 COPY web ./web
 RUN npm run build:app
 
+FROM python:3.12-slim-bookworm@sha256:6a0e06f5ba0b373d051aabd3fffb9b873f27f9a2a3a14bcbe37dee6f0e3bbc70 AS tesseract-api
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential pkg-config libtesseract-dev libleptonica-dev \
+    && rm -rf /var/lib/apt/lists/*
+COPY requirements-tesserocr.lock ./
+RUN pip install --no-cache-dir Cython==3.3.1 setuptools==80.9.0 wheel==0.45.1 \
+    && pip wheel --no-cache-dir --require-hashes --no-deps --no-binary=tesserocr --no-build-isolation \
+       --wheel-dir /wheels -r requirements-tesserocr.lock
+
 FROM python:3.12-slim-bookworm@sha256:6a0e06f5ba0b373d051aabd3fffb9b873f27f9a2a3a14bcbe37dee6f0e3bbc70
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 OMP_THREAD_LIMIT=2 OPENBLAS_NUM_THREADS=1 \
-    APP_PUBLIC_URL=http://localhost:8000 STATE_DIR=/state WORK_DIR=/work ARCHIVE_DIR=/archive OCR_ENABLED=1
+    APP_PUBLIC_URL=http://localhost:8000 STATE_DIR=/state WORK_DIR=/work ARCHIVE_DIR=/archive OCR_ENABLED=1 \
+    OCR_BACKEND=tesserocr TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr tesseract-ocr-eng tesseract-ocr-fra tesseract-ocr-jpn tesseract-ocr-chi-tra tesseract-ocr-chi-sim \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY requirements.lock ./
 RUN pip install --no-cache-dir --require-hashes -r requirements.lock
+COPY --from=tesseract-api /wheels /wheels
+RUN pip install --no-cache-dir --no-index --find-links=/wheels tesserocr==2.12.0 \
+    && rm -rf /wheels \
+    && python -c 'import tesserocr; assert "tesseract 5.3.0" in tesserocr.tesseract_version()'
 COPY server ./server
 COPY raw-scanner.mjs ./
 COPY scanner-driver/build ./scanner-driver/build

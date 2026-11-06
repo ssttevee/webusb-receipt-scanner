@@ -99,7 +99,7 @@ Acceptance:
 
 Type: Research. Size: M. Depends on: RA-01; RA-04 for NAS performance measurements.
 
-Progress: the [53-sample extraction baseline](receipt-extraction-baseline-2026-11-03.md) measures the first Tesseract region/tile pipeline with corrected labels and all required language profiles. The final conservative gate proposes 22 matching timestamps and leaves 31 in review on the inspected development set. Warm engines, RapidOCR/ONNX comparison, unseen evaluation and actual NAS throughput remain open.
+Progress: the [53-sample extraction baseline](receipt-extraction-baseline-2026-11-03.md) and [CPU OCR comparison](receipt-ocr-comparison-2026-11-03.md) cover corrected labels and all required language profiles. Persistent Tesseract matches CLI OCR/fields on all 53 samples, proposes 22 timestamps and reduces measured emulated runtime by about 35%; it is now the Docker default. RapidOCR proposes 29 correct date/minute values but costs more runtime/memory. Selective fallback, unseen evaluation and actual NAS throughput remain open.
 
 Work:
 - Compare current Tesseract, a server OCR option, and a suitable local document model where hardware permits.
@@ -197,7 +197,7 @@ Acceptance:
 
 Type: Feature. Size: M. Depends on: RA-08.
 
-Progress: the SQLite queue and separate worker implement immediate processing, renewable leases, three bounded attempts, manual retry, approval, post-commit cleanup and Drive jobs. Tests cover lease recovery, failed archive writes, filesystem-finalization replay and decode replay after approved cleanup. Tesseract currently runs per receipt; persistent warm engines and NAS throughput remain benchmark work.
+Progress: the SQLite queue and separate worker implement immediate processing, renewable leases, three bounded attempts, manual retry, approval, post-commit cleanup and Drive jobs. Tests cover lease recovery, failed archive writes, filesystem-finalization replay and decode replay after approved cleanup. The Docker worker now owns a bounded persistent Tesseract profile cache, with adaptive/per-image state reset and eviction/shutdown cleanup. NAS throughput remains unmeasured.
 
 Work:
 - Add persisted jobs for image processing, extraction, export, and Drive transfer.

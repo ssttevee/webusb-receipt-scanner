@@ -22,7 +22,13 @@ def lines_from_tsv(text, source, x=0, y=0):
         if row["level"] != "5" or not row["text"].strip():
             continue
         left, top, width, height = (int(row[key]) for key in ("left", "top", "width", "height"))
-        words.append({"text": row["text"], "box": (left + x, top + y, left + x + width, top + y + height), "confidence": float(row["conf"])})
+        words.append({"text": row["text"], "box": (left, top, left + width, top + height), "confidence": float(row["conf"])})
+    return lines_from_words(words, source, x, y)
+
+
+def lines_from_words(words, source, x=0, y=0):
+    words = [{**word, "box": (word["box"][0] + x, word["box"][1] + y, word["box"][2] + x, word["box"][3] + y)}
+             for word in words if word["text"].strip() and word["box"][2] > word["box"][0] and word["box"][3] > word["box"][1]]
     groups = []
     for word in sorted(words, key=lambda word: ((word["box"][1] + word["box"][3]) / 2, word["box"][0])):
         box = word["box"]
@@ -63,16 +69,20 @@ def receipt_region(image):
     return (0, 0, image.width, end)
 
 
-def recognize(image, *, dpi=200, languages=("eng",), output=None, date_order=None, century=None, timeout=120):
+def recognize(image, *, dpi=200, languages=("eng",), output=None, date_order=None, century=None, timeout=120, backend=None):
     started = time.monotonic()
     left, top, right, bottom = receipt_region(image)
     region = image.crop((left, top, right, bottom)).convert("L")
     all_lines, passes, failures = [], [], []
     profile = [language for language in languages if language in ("eng", "fra", "jpn", "chi_tra", "chi_sim")] or ["eng"]
-    try:
-        engine = subprocess.check_output(["tesseract", "--version"], text=True).splitlines()[0]
-    except FileNotFoundError:
-        engine = "unavailable"
+    if backend:
+        engine = backend.engine
+    else:
+        try:
+            engine = subprocess.check_output(["tesseract", "--version"], text=True).splitlines()[0]
+        except FileNotFoundError:
+            engine = "unavailable"
+    initialization_seconds = 0.0
     tiles = [("discovery", region, left, top, 11)]
     for index, row in enumerate(range(0, region.height, 1400)):
         if index >= 32:
@@ -85,22 +95,29 @@ def recognize(image, *, dpi=200, languages=("eng",), output=None, date_order=Non
         if remaining <= 0:
             failures.append("ocr_time_budget_exceeded")
             break
-        buffer = io.BytesIO()
-        pixels.save(buffer, format="PNG")
         try:
-            result = subprocess.run(["tesseract", "stdin", "stdout", "--dpi", str(dpi), "-l", "+".join(profile), "--psm", str(psm), "tsv"],
-                input=buffer.getvalue(), capture_output=True, timeout=remaining,
-                env={**os.environ, "OMP_THREAD_LIMIT": "2"})
-            if result.returncode:
-                failures.append("ocr_pass_failed")
-                continue
-            text = result.stdout.decode("utf-8")
-            lines = lines_from_tsv(text, name, x, y)
+            if backend:
+                result = backend.read(pixels, profile=profile, dpi=dpi, psm=psm, timeout=remaining)
+                initialization_seconds += result.get("initialization_seconds", 0)
+                text = result.get("tsv")
+                lines = lines_from_tsv(text, name, x, y) if text is not None else lines_from_words(result["words"], name, x, y)
+            else:
+                buffer = io.BytesIO()
+                pixels.save(buffer, format="PNG")
+                result = subprocess.run(["tesseract", "stdin", "stdout", "--dpi", str(dpi), "-l", "+".join(profile), "--psm", str(psm), "tsv"],
+                    input=buffer.getvalue(), capture_output=True, timeout=remaining,
+                    env={**os.environ, "OMP_THREAD_LIMIT": "2"})
+                if result.returncode:
+                    failures.append("ocr_pass_failed")
+                    continue
+                text = result.stdout.decode("utf-8")
+                lines = lines_from_tsv(text, name, x, y)
             all_lines.extend(lines)
-            if output:
-                durable_write(Path(output) / f"{name}.tsv", result.stdout)
-            passes.append({"id": name, "psm": psm, "box": [x, y, x + pixels.width, y + pixels.height], "line_count": len(lines)})
-        except (subprocess.TimeoutExpired, FileNotFoundError):
+            if output and text is not None:
+                durable_write(Path(output) / f"{name}.tsv", text.encode())
+            passes.append({"id": name, "psm": psm if backend is None or backend.supports_psm else None,
+                           "box": [x, y, x + pixels.width, y + pixels.height], "line_count": len(lines)})
+        except (subprocess.TimeoutExpired, FileNotFoundError, TimeoutError, RuntimeError, ValueError):
             failures.append("ocr_pass_unavailable_or_timed_out")
     extraction = extract(all_lines, date_order=date_order, century=century)
     if failures:
@@ -108,6 +125,8 @@ def recognize(image, *, dpi=200, languages=("eng",), output=None, date_order=Non
         extraction["selected"] = None
         extraction["status"] = "needs_review"
     return {"version": VERSION, "engine": engine, "languages": profile, "state": "done" if passes else "failed",
+            "backend": backend.descriptor if backend else {"kind": "cli", "engine": engine},
+            "initialization_seconds": round(initialization_seconds, 6),
             "seconds": round(time.monotonic() - started, 3), "region": [left, top, right, bottom],
             "passes": passes, "failures": failures, "lines": [asdict(line) for line in all_lines],
             "text": "\n".join(line.text for line in all_lines), "extraction": extraction}

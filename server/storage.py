@@ -21,17 +21,21 @@ class Settings:
     lease_seconds: int = 300
     date_order: str | None = None
     year_century: int | None = None
+    ocr_backend: str = "cli"
 
     def __post_init__(self):
         if self.date_order not in (None, "MDY", "DMY", "YMD") or self.year_century not in (None, 1900, 2000):
             raise ValueError("DATE_ORDER must be MDY/DMY/YMD; TWO_DIGIT_YEAR_CENTURY must be 1900/2000 or unset")
+        if self.ocr_backend not in ("cli", "tesserocr"):
+            raise ValueError("OCR_BACKEND must be cli or tesserocr")
 
     @classmethod
     def environment(cls):
         return cls(Path(os.getenv("STATE_DIR", "/state")), Path(os.getenv("WORK_DIR", "/work")),
                    Path(os.getenv("ARCHIVE_DIR", "/archive")), os.getenv("APP_PUBLIC_URL", "http://localhost:8000").rstrip("/"),
                    os.getenv("OCR_ENABLED", "1") == "1", date_order=os.getenv("DATE_ORDER") or None,
-                   year_century=int(os.environ["TWO_DIGIT_YEAR_CENTURY"]) if os.getenv("TWO_DIGIT_YEAR_CENTURY") else None)
+                   year_century=int(os.environ["TWO_DIGIT_YEAR_CENTURY"]) if os.getenv("TWO_DIGIT_YEAR_CENTURY") else None,
+                   ocr_backend=os.getenv("OCR_BACKEND", "cli"))
 
 
 def encode(value):
