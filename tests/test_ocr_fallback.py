@@ -66,7 +66,7 @@ def test_supported_primary_never_calls_fallback_or_changes_its_selection(tmp_pat
     assert result["fallback"]["reason"] == "primary_supported"
 
 
-@pytest.mark.parametrize("issue", ["ambiguous_numeric_date", "two_digit_year_requires_century", "invalid_printed_time", "invalid_calendar_date", "contradictory_clock_suffix"])
+@pytest.mark.parametrize("issue", ["ambiguous_numeric_date", "two_digit_year_requires_century", "invalid_printed_time", "contradictory_clock_suffix"])
 def test_explicit_policy_or_invalid_source_stays_in_review(issue, tmp_path):
     primary = evidence(supported=False)
     primary["extraction"]["issues"] = [issue]
@@ -74,6 +74,34 @@ def test_explicit_policy_or_invalid_source_stays_in_review(issue, tmp_path):
     result = route(primary, client, "unused", output=tmp_path)
     assert result["extraction"]["selected"] is None and client.calls == 0
     assert fallback_reason(primary["extraction"]) is not None
+
+
+@pytest.mark.parametrize("secondary_state", ["supported", "invalid_calendar", "single_pass", "incomplete"])
+def test_invalid_calendar_read_requires_independently_supported_fallback(secondary_state, tmp_path):
+    primary = evidence("2026-02-34 13:14:15")
+    original = deepcopy(primary)
+    secondary = evidence("2026-02-24 13:14:15")
+    if secondary_state == "invalid_calendar":
+        secondary = evidence("2026-02-34 13:14:15")
+    elif secondary_state == "single_pass":
+        secondary["lines"] = secondary["lines"][:1]
+        secondary["extraction"] = extract([Line(**line) for line in secondary["lines"]])
+    elif secondary_state == "incomplete":
+        secondary["failures"] = ["ocr_pass_unavailable_or_timed_out"]
+    client = Client(secondary)
+    result = route(primary, client, "unused", output=tmp_path)
+    assert client.calls == 1 and primary == original
+    assert result["fallback"]["primary_extraction"] == original["extraction"]
+    assert result["extraction"]["routing"]["primary_issues"] == ["invalid_calendar_date", "missing_complete_timestamp"]
+    if secondary_state == "supported":
+        assert result["extraction"]["selected"]["date"] == "2026-02-24"
+        assert result["extraction"]["selected"]["support"] == "two_ocr_passes"
+        assert result["extraction"]["selected"]["candidate_id"].startswith("fallback:")
+        assert result["extraction"]["review_required"] is True
+        assert result["fallback"]["state"] == "accepted"
+    else:
+        assert result["extraction"]["selected"] is None
+        assert result["fallback"]["state"] == "no_proposal"
 
 
 def test_fallback_proposal_keeps_both_independent_branches(tmp_path):

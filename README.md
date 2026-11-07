@@ -29,6 +29,8 @@ docker run --rm --name receipt-scanner --platform linux/amd64 \
 
 Open **http://localhost:8000** in desktop Chrome/Edge. The USB device stays on the workstation. The UI provides scanning, pending-transfer recovery, full-resolution inspection, manual date/time review, combine/split/reorder, deletion of bad scans from staging, version-bound approval, PDF download and explicit Drive delivery.
 
+New scans assume the current century for two-digit years. Set **Scan year century** before a session or import to change that choice. The browser retains it for later scans. Each capture records its century; printed four-digit years remain unchanged.
+
 The application creates a lossless reference master and evidence-backed date/time proposals. Supported proposals prefill staging fields; Save review confirms or corrects them before approval. Ambiguous/unsupported sources stay in review. Enhanced-master ranking and staged revisions of approved exports remain subsequent work.
 
 See the [53-sample extraction baseline](docs/plans/receipt-extraction-baseline-2026-11-03.md) for measured proposal coverage, review cases and limits.

@@ -20,6 +20,10 @@ class Frame(Model):
     last_frame: Literal[True]
 
 
+class ScanPolicy(Model):
+    century: Literal[1900, 2000] | None
+
+
 class Capture(Model):
     id: str
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -33,6 +37,7 @@ class Capture(Model):
     transport_complete: Literal[True]
     languages: list[LANGUAGES] = Field(default_factory=lambda: ["eng"], min_length=1, max_length=5)
     scanner: dict = Field(default_factory=dict)
+    timestamp_policy: ScanPolicy | None = None
 
     @model_validator(mode="after")
     def check_frame(self):

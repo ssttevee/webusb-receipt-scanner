@@ -7,9 +7,9 @@ import time
 from .recognition import recognize
 from .storage import durable_write
 
-VERSION = "selective-fallback-v1"
+VERSION = "selective-fallback-v2"
 POLICY_ISSUES = {"ambiguous_numeric_date", "two_digit_year_requires_century"}
-SOURCE_ISSUES = {"invalid_printed_time", "invalid_calendar_date", "contradictory_clock_suffix"}
+SOURCE_ISSUES = {"invalid_printed_time", "contradictory_clock_suffix"}
 
 
 def fallback_reason(extraction):
@@ -18,6 +18,8 @@ def fallback_reason(extraction):
     issues = set(extraction["issues"])
     if issues & POLICY_ISSUES:
         return "date_policy_requires_review"
+    # An invalid calendar read can be an OCR digit error. Independent fallback
+    # must supply its own complete, calendar-valid, corroborated timestamp.
     if issues & SOURCE_ISSUES:
         return "invalid_source_requires_review"
     return None

@@ -53,7 +53,7 @@ async function environment(callback, fixture = false, ocr = false) {
 }
 
 test("browser queue survives a lost acknowledgment and reload, then review/approval produces a downloadable PDF", { timeout: 120000 }, async () => {
-  await environment(async ({ page, directory }) => {
+  await environment(async ({ page, directory, origin }) => {
     let loseAcknowledgment = true;
     await page.route("**/api/captures/*/finalize", async route => {
       const response = await route.fetch();
@@ -72,10 +72,15 @@ test("browser queue survives a lost acknowledgment and reload, then review/appro
     await page.locator('input[type="file"]').setInputFiles({ name: "synthetic.png", mimeType: "image/png", buffer: Buffer.from(png, "base64") });
     await page.waitForFunction(() => document.querySelector('[role="status"]').textContent.includes("login/error page"));
     assert.match(await page.locator(".capture-panel").textContent(), /1 browser copies pending/);
+    await page.getByLabel("Scan year century", { exact: true }).selectOption("1900");
     await page.reload();
+    assert.equal(await page.getByLabel("Scan year century", { exact: true }).inputValue(), "1900");
     await page.waitForFunction(() => document.querySelector(".capture-panel").textContent.includes("0 browser copies pending"));
     await page.waitForFunction(() => document.querySelector(".receipt .badge")?.textContent === "ready");
     assert.equal(await page.locator(".receipt").count(), 1);
+    const intake = await (await page.request.get(`${origin}/api/state`)).json();
+    const savedCapture = await (await page.request.get(`${origin}/api/receipts/${intake.groups[0].receipts[0].id}/evidence`)).json();
+    assert.equal(savedCapture.capture.timestamp_policy.century, Math.floor(new Date().getFullYear() / 100) * 100);
     await page.getByLabel("Transaction date", { exact: true }).fill("2026-09-14");
     await page.getByLabel("Transaction time", { exact: true }).fill("17:21:30");
     await page.getByLabel("Physical bottom is present").check();
@@ -124,6 +129,7 @@ test("production capture UI uses the compiled Epson backend and transfers an unc
     assert.equal(receipt.date, null); assert.equal(receipt.time, null);
     const evidence = await (await fetch(`${origin}/api/receipts/${receipt.id}/evidence`)).json();
     assert.equal(evidence.capture.height, Math.round(1000 * 200 / 25.4));
+    assert.equal(evidence.capture.timestamp_policy.century, Math.floor(new Date().getFullYear() / 100) * 100);
     const raw = await readFile(join(directory, "work", "captures", receipt.id, "original.bin"));
     assert.equal(raw.length, evidence.capture.height * evidence.capture.frame.bytes_per_line);
     assert.ok(raw.every(byte => byte === 170));
@@ -220,5 +226,49 @@ test("a receipt-local convention reparses saved OCR and retains its prior analys
     await page.getByRole("button", { name: "Inspect analysis 1", exact: true }).click();
     assert.match(await page.locator(".analysis-controls pre").textContent(), /ambiguous_numeric_date/);
     assert.equal(await page.getByLabel("Transaction date", { exact: true }).inputValue(), "2022-09-01");
+  }, false, true);
+});
+
+test("scan century defaults to this century and persists for later imports", {
+  timeout: 120000, skip: spawnSync("tesseract", ["--version"]).status !== 0,
+}, async () => {
+  await environment(async ({ page, origin }) => {
+    assert.equal(await page.getByLabel("Scan year century", { exact: true }).inputValue(), "current");
+    const png = await page.evaluate(() => {
+      const canvas = document.createElement("canvas"); canvas.width = 640; canvas.height = 1200;
+      const context = canvas.getContext("2d"); context.fillStyle = "white"; context.fillRect(0, 0, 640, 1200);
+      context.fillStyle = "black"; context.font = "32px sans-serif";
+      context.fillText("Transaction", 30, 80); context.fillText("08/14/26 17:21:30", 30, 150);
+      return canvas.toDataURL("image/png").split(",")[1];
+    });
+    async function importReceipt(count) {
+      await page.locator('input[type="file"]').setInputFiles({ name: "two-digit-year.png", mimeType: "image/png", buffer: Buffer.from(png, "base64") });
+      for (let attempt = 0; attempt < 150; attempt++) {
+        const state = await (await fetch(`${origin}/api/state`)).json();
+        const receipts = state.groups.flatMap(group => group.receipts);
+        if (receipts.length === count && receipts.every(receipt => receipt.state === "ready")) {
+          return receipts.sort((a, b) => b.created - a.created)[0];
+        }
+        await sleep(200);
+      }
+      assert.fail("The imported receipt did not complete OCR");
+    }
+    const first = await importReceipt(1);
+    const firstEvidence = await (await fetch(`${origin}/api/receipts/${first.id}/evidence`)).json();
+    assert.equal(first.date, `${Math.floor(new Date().getFullYear() / 100) * 100 + 26}-08-14`, JSON.stringify({ receipt: first, evidence: firstEvidence }));
+    assert.equal(first.analysis.policy.source, "scan_settings");
+    assert.equal(first.timestamp_review, 1);
+    await page.getByLabel("Scan year century", { exact: true }).selectOption("1900");
+    await page.reload();
+    assert.equal(await page.getByLabel("Scan year century", { exact: true }).inputValue(), "1900");
+    assert.equal((await importReceipt(2)).date, "1926-08-14");
+    await page.getByLabel("Scan year century", { exact: true }).selectOption("none");
+    await page.reload();
+    assert.equal(await page.getByLabel("Scan year century", { exact: true }).inputValue(), "none");
+    const third = await importReceipt(3);
+    assert.equal(third.date, null);
+    assert.equal(third.analysis.policy.effective.century, null);
+    const state = await (await fetch(`${origin}/api/state`)).json();
+    assert.equal(state.groups.flatMap(group => group.receipts).find(receipt => receipt.id === first.id).date, first.date);
   }, false, true);
 });

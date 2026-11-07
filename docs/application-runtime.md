@@ -18,7 +18,9 @@ If Drive is offline during path preparation, the UI records that its collision c
 
 This slice has one reference master, automatic timestamp proposals, mandatory confirmation and immutable approved exports. The [CPU OCR comparison](plans/receipt-ocr-comparison-2026-11-03.md) selects persistent Tesseract for the Docker worker. Improved OCR recall, image enhancement/ranking, production sample pinning, approved-group revisions, batch approval and richer cleanup policies remain planned. It does not satisfy all RA release acceptance checks.
 
-The optional `receipt-scanner:ocr` image adds a [measured selective RapidOCR fallback](plans/receipt-selective-fallback-2026-11-06.md). It preserves supported primary proposals and retains policy/invalid-source cases for review. A bounded child process handles other unresolved receipts. The inspected-corpus result is 31 matching proposals and 22 review cases; unseen accuracy and NAS throughput remain open.
+The optional `receipt-scanner:ocr` image adds a [measured selective RapidOCR fallback](plans/receipt-selective-fallback-2026-11-06.md). It preserves supported primary proposals and retains explicit date-policy and invalid-clock cases for review. A bounded child process handles other unresolved receipts. The historical inspected-corpus result is 31 matching proposals and 22 review cases; unseen accuracy and NAS throughput remain open.
+
+Router `selective-fallback-v2` also permits an independent OCR attempt after an invalid calendar read. OCR digit errors can produce impossible dates. The fallback must supply its own complete, calendar-valid timestamp with direct corroboration. Both source branches remain available, and the proposal still needs user confirmation. The router never repairs a date by digit substitution.
 
 The Docker worker retains at most three Tesseract language profiles. It clears adaptive state and image buffers between passes and releases profiles on eviction/shutdown. The API extension uses the same system Tesseract 5.3.0 library and language data as the CLI. Corpus OCR text/boxes and timestamp proposals match the earlier path exactly; measured emulated-workstation runtime fell by about 35%.
 
@@ -26,7 +28,11 @@ The Docker worker retains at most three Tesseract language profiles. It clears a
 
 The parser supports English/French month names, numeric dates, Japanese/Chinese year-month-day markers, Japanese era dates, hour/minute markers, AM/PM and seconds. It selects the earliest supported complete timestamp, preserving precision and every source candidate. Scheduled visits, business hours and coupon contexts are excluded; arbitrary reference digits are not trusted timestamp evidence. Invalid printed seconds, unresolved date associations and OCR disagreements require review.
 
-Ambiguous numeric order stays unresolved unless independent printed evidence resolves it or `DATE_ORDER` explicitly defines the intake convention. Two-digit years need `TWO_DIGIT_YEAR_CENTURY`; the application does not silently add 2000. Leave both settings unset for a mixed archive unless a convention is valid for that intake. Missing seconds remain minute precision. No missing field becomes midnight or scan time.
+Ambiguous numeric order stays unresolved unless independent printed evidence resolves it or `DATE_ORDER` explicitly defines the intake convention. New scans assume the current century for two-digit years, currently 2000–2099. Printed four-digit years remain unchanged. Missing seconds remain minute precision. No missing field becomes midnight or scan time.
+
+Set **Scan year century** before a scan session or image import. The default is **Current century** for routine recent receipts. The browser retains the choice across visits. Select **1900–1999** or **No assumption** for archive work. Each browser transfer record includes the resolved century, so a later setting change cannot reinterpret a pending scan.
+
+The server records the initial effective policy when it queues processing. The scan choice takes priority over the application century default. Older clients without a scan choice use `TWO_DIGIT_YEAR_CENTURY`, which defaults to `current`; `none` disables that assumption. Existing receipt evidence and manual confirmations remain unchanged.
 
 Evidence includes extractor/recognizer versions, parser policy, raw OCR lines, original-coordinate boxes, OCR tool scores, selected candidate/reason and unresolved alternatives. Tool scores are not measured date accuracy. New captures use this path; existing manually reviewed fields remain intact.
 
@@ -71,7 +77,7 @@ Files use temporary writes on the destination filesystem, fsync, finalization an
 | `OCR_FALLBACK_MEMORY_MIB` | `4096`; Linux child address-space cap, range 1024–6144 MiB |
 | `RAPIDOCR_MODEL_DIR` | `/opt/receipt-ocr-models`; enhanced image includes verified assets |
 | `DATE_ORDER` | Unset; optional `MDY`, `DMY` or `YMD` for an explicitly known intake convention |
-| `TWO_DIGIT_YEAR_CENTURY` | Unset; optional `1900` or `2000`; no implicit century |
+| `TWO_DIGIT_YEAR_CENTURY` | `current`; application default for two-digit years; accepts `current`, `1900`, `2000` or `none`; scan choices take priority |
 | `DRIVE_CLIENT_ID` | Optional Google OAuth web client ID |
 | `DRIVE_CLIENT_SECRET` | Optional server-side OAuth secret |
 | `DRIVE_ROOT_ID` | Existing personal Drive receipts folder ID |
@@ -139,4 +145,8 @@ The persistent-API increment passed **59 Python tests** and **3 application brow
 
 The selective-fallback increment passes **74 Python tests** and **4 application browser tests**. Its enhanced-image checks verify a real recovery and forced deadline/child termination, followed by manual approval and exact source-pixel PDF checks. These checks use disposable volumes and preserve the private input bundles.
 
-The current convention/reanalysis increment passes **89 Python tests** and **5 application browser tests**, with schema migration, lease/supersede, manual-edit preservation and unsaved-field approval checks. Live real-sample scenarios validate cached parsing, fresh recognition, AM/PM fallback recovery, immutable history and exact PDF pixels.
+The convention/reanalysis increment passed **89 Python tests** and **5 application browser tests**, with schema migration, lease/supersede, manual-edit preservation and unsaved-field approval checks. Live real-sample scenarios validate cached parsing, fresh recognition, AM/PM fallback recovery, immutable history and exact PDF pixels.
+
+The calendar-fallback correction passes **92 Python tests**. Tests require independent, corroborated fallback evidence and retain review for invalid, incomplete or single-pass secondary reads. A fresh real-scan check recovers a valid proposal after the primary engine reads an impossible day. Local reanalysis preserves the original/master checksums and prior evidence, and leaves the proposal unconfirmed. Isolated container checks also pass restart recovery, approval and exact real-receipt PDF pixels.
+
+The scan-century increment passes **104 Python tests** and **6 application browser tests**. Coverage includes current-century defaults, archive overrides, queue snapshots, upload retries, browser persistence and unchanged prior receipts. The enhanced container also passes the real-sample reanalysis and exact PDF checks. The local service update preserves all existing receipt groups and evidence.

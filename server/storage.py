@@ -1,6 +1,7 @@
 """SQLite transactions and same-filesystem durable file finalization."""
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import date
 import hashlib
 import json
 import os
@@ -9,6 +10,10 @@ import sqlite3
 import tempfile
 import time
 import uuid
+
+
+def current_century():
+    return date.today().year // 100 * 100
 
 
 @dataclass
@@ -20,7 +25,7 @@ class Settings:
     ocr: bool = True
     lease_seconds: int = 300
     date_order: str | None = None
-    year_century: int | None = None
+    year_century: int | None = field(default_factory=current_century)
     ocr_backend: str = "cli"
     ocr_fallback: str = "none"
     fallback_timeout: int = 45
@@ -28,7 +33,7 @@ class Settings:
 
     def __post_init__(self):
         if self.date_order not in (None, "MDY", "DMY", "YMD") or self.year_century not in (None, 1900, 2000):
-            raise ValueError("DATE_ORDER must be MDY/DMY/YMD; TWO_DIGIT_YEAR_CENTURY must be 1900/2000 or unset")
+            raise ValueError("DATE_ORDER must be MDY/DMY/YMD; TWO_DIGIT_YEAR_CENTURY must be current/1900/2000/none")
         if self.ocr_backend not in ("cli", "tesserocr"):
             raise ValueError("OCR_BACKEND must be cli or tesserocr")
         if self.ocr_fallback not in ("none", "rapidocr") or not 1 <= self.fallback_timeout <= 120 or not 1024 <= self.fallback_memory_mib <= 6144:
@@ -36,10 +41,11 @@ class Settings:
 
     @classmethod
     def environment(cls):
+        century = os.getenv("TWO_DIGIT_YEAR_CENTURY", "current").strip().lower()
         return cls(Path(os.getenv("STATE_DIR", "/state")), Path(os.getenv("WORK_DIR", "/work")),
                    Path(os.getenv("ARCHIVE_DIR", "/archive")), os.getenv("APP_PUBLIC_URL", "http://localhost:8000").rstrip("/"),
                    os.getenv("OCR_ENABLED", "1") == "1", date_order=os.getenv("DATE_ORDER") or None,
-                   year_century=int(os.environ["TWO_DIGIT_YEAR_CENTURY"]) if os.getenv("TWO_DIGIT_YEAR_CENTURY") else None,
+                   year_century=None if century == "none" else current_century() if century in ("", "current") else int(century),
                    ocr_backend=os.getenv("OCR_BACKEND", "cli"), ocr_fallback=os.getenv("OCR_FALLBACK", "none"),
                    fallback_timeout=int(os.getenv("OCR_FALLBACK_TIMEOUT_SECONDS", "45")),
                    fallback_memory_mib=int(os.getenv("OCR_FALLBACK_MEMORY_MIB", "4096")))

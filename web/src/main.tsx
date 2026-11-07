@@ -9,7 +9,7 @@ type ScannerCapture = { blob: Blob; dimensions: { width: number; height: number 
   parameters: Frame; resolution: { x: number; y: number }; diagnostics: { transport_complete: boolean }; [key: string]: unknown } };
 type Manifest = { id: string; kind: "scanner-raw" | "image"; sha256: string; byte_length: number;
   width: number; height: number; dpi_x: number; dpi_y: number; transport_complete: boolean;
-  languages: string[]; frame?: Frame; scanner?: Record<string, unknown> };
+  languages: string[]; frame?: Frame; scanner?: Record<string, unknown>; timestamp_policy?: { century: number | null } };
 type Pending = { id: string; created: number; blob: Blob; manifest: Manifest };
 type Diagnostic = { id: string; blob: Blob; metadata: unknown };
 type Receipt = { id: string; group_id: string; date: string | null; time: string | null; state: string;
@@ -298,6 +298,10 @@ function App() {
   const [connecting, setConnecting] = useState(false);
   const [longPaper, setLongPaper] = useState(true);
   const [languages, setLanguages] = useState(["eng"]);
+  const [scanCentury, setScanCentury] = useState(() => {
+    try { const saved = localStorage.getItem("receipt-scan-century"); return ["current", "1900", "none"].includes(saved ?? "") ? saved! : "current"; }
+    catch { return "current"; }
+  });
   const [scanner, setScanner] = useState<any>(null);
   const [controller, setController] = useState<AbortController | null>(null);
   const [release, setRelease] = useState<(() => void) | null>(null);
@@ -356,7 +360,8 @@ function App() {
     const manifest: Manifest = { id, sha256: await sha256(capture.blob), byte_length: capture.blob.size, kind: "scanner-raw",
       width: capture.dimensions.width, height: capture.dimensions.height, frame: capture.scanner.parameters,
       dpi_x: capture.scanner.resolution.x, dpi_y: capture.scanner.resolution.y,
-      transport_complete: capture.scanner.diagnostics.transport_complete, languages, scanner: capture.scanner };
+      transport_complete: capture.scanner.diagnostics.transport_complete, languages, scanner: capture.scanner,
+      timestamp_policy: scanPolicy() };
     await database.pending.add({ id, created: Date.now(), blob: capture.blob, manifest });
     await localRefresh(); void resume();
   }
@@ -382,13 +387,17 @@ function App() {
     } finally { setScanning(false); setController(null); }
   }
   async function importImage(file: File) {
+    const policy = scanPolicy();
     try {
       const image = await createImageBitmap(file);
       const id = crypto.randomUUID();
       const manifest: Manifest = { id, kind: "image", sha256: await sha256(file), byte_length: file.size,
-        width: image.width, height: image.height, dpi_x: 200, dpi_y: 200, transport_complete: true, languages };
+        width: image.width, height: image.height, dpi_x: 200, dpi_y: 200, transport_complete: true, languages, timestamp_policy: policy };
       image.close(); await database.pending.add({ id, created: Date.now(), blob: file, manifest }); await localRefresh(); await resume();
     } catch (error) { setStatus(`Image import failed: ${error}`); }
+  }
+  function scanPolicy() {
+    return { century: scanCentury === "none" ? null : scanCentury === "current" ? Math.floor(new Date().getFullYear() / 100) * 100 : Number(scanCentury) };
   }
   async function combine() {
     try {
@@ -413,8 +422,15 @@ function App() {
     </div><div class="row"><label>OCR languages<select multiple disabled={scanning} onChange={event => {
       const values = Array.from(event.currentTarget.selectedOptions, option => option.value); setLanguages(values.length ? values : ["eng"]);
     }}>{["eng", "fra", "jpn", "chi_tra", "chi_sim"].map(language => <option value={language} selected={languages.includes(language)}>{language}</option>)}</select></label>
+      <label>Scan year century<select aria-label="Scan year century" value={scanCentury} disabled={scanning} onChange={event => {
+        const value = event.currentTarget.value; setScanCentury(value);
+        try { localStorage.setItem("receipt-scan-century", value); }
+        catch { setStatus("The scan century applies to this tab, but browser storage could not save it for the next visit."); }
+      }}><option value="current">Current century ({Math.floor(new Date().getFullYear() / 100) * 100}–{Math.floor(new Date().getFullYear() / 100) * 100 + 99})</option>
+        <option value="1900">1900–1999</option><option value="none">No assumption</option></select></label>
       <label>Or import an unprocessed PNG (200 DPI)<input type="file" accept="image/png" onChange={event => { const file = event.currentTarget.files?.[0]; if (file) void importImage(file); event.currentTarget.value = ""; }} /></label>
       <div><strong>{pending} browser copies pending</strong><p><button class="secondary" onClick={resume}>Resume transfers</button></p></div></div>
+      <p class="muted">The scan century applies to two-digit years on new scans and imports. This browser retains the choice. Printed four-digit years stay unchanged.</p>
       <p class="muted">Transport completion does not confirm the physical bottom. Check it during review. OCR proposes supported timestamps; Save review confirms or corrects each proposal before approval.</p>
       {diagnostics.length > 0 && <details><summary>{diagnostics.length} incomplete/fault captures retained in this browser</summary>{diagnostics.map(item => <DiagnosticDownload item={item} key={item.id} />)}</details>}
     </section>

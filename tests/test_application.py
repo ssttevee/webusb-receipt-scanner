@@ -22,19 +22,21 @@ def runtime(tmp_path):
     return TestClient(app, base_url=ORIGIN, headers=HEADERS), app.state.store
 
 
-def capture(client, store, identity=None, complete=True):
+def capture(client, store, identity=None, complete=True, process=True, **metadata):
     data = bytes([220, 220, 220, 20, 20, 20] * 1600)
     manifest = {"id": identity or str(uuid.uuid4()), "sha256": hashlib.sha256(data).hexdigest(),
         "byte_length": len(data), "kind": "scanner-raw", "width": 20, "height": 160,
         "dpi_x": 200, "dpi_y": 200, "transport_complete": complete,
         "frame": {"format": 1, "depth": 8, "bytes_per_line": 60, "pixels_per_line": 20, "lines": 160, "last_frame": True}}
+    manifest.update(metadata)
     assert client.post("/api/captures", json=manifest).status_code == (200 if complete else 422)
     if not complete:
         return
     assert client.put(f"/api/captures/{manifest['id']}/chunks/0", content=data,
                       headers={**HEADERS, "Content-Type": "application/octet-stream"}).status_code == 200
     assert client.post(f"/api/captures/{manifest['id']}/finalize").json()["durable"] is True
-    assert run_one(store)
+    if process:
+        assert run_one(store)
     return manifest, data
 
 

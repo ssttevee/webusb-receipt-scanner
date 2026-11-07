@@ -242,6 +242,8 @@ Progress: `server/recognition.py` and `extraction.py` implement original-coordin
 
 Convention progress: receipt-local explicit order/century choices now support cached reparse and fresh recognition with immutable run history. The [policy-assisted scenario](receipt-convention-reanalysis-2026-11-06.md) supplies nine conventions and yields 40 matching proposals on 53 inspected samples. This is not automatic convention inference. Parser v3 flags damaged meridiem suffixes instead of assuming a 24-hour value.
 
+Routine intake now defaults to the current century for two-digit years. **Scan year century** retains the browser choice and records it with each new scan/import. Initial jobs snapshot the effective policy before processing; pending uploads retain their original choice. Existing analyses and printed four-digit years remain unchanged.
+
 Work:
 - Extract the purchase date from the whole receipt without a user-selected box.
 - Keep raw OCR, text locations where available, competing field candidates, and engine version.

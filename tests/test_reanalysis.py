@@ -71,6 +71,56 @@ def test_policy_is_receipt_local_and_snapshots_application_defaults(cached):
     assert receipt["analysis"]["policy"]["effective"] == {"date_order": None, "century": None}
 
 
+@pytest.mark.parametrize("century,expected", [(2000, "2024-06-01"), (1900, "1924-06-01"), (None, None)])
+def test_scan_century_survives_queue_delay_and_upload_retry(cached, century, expected):
+    client, store, _, _ = cached
+    store.settings.date_order = "MDY"
+    manifest, _ = capture(client, store, process=False, timestamp_policy={"century": century})
+    queued = next(r for g in state(client)["groups"] for r in g["receipts"] if r["id"] == manifest["id"])
+    assert queued["analysis"]["policy"]["effective"]["century"] == century
+    assert queued["analysis"]["policy"]["source"] == "scan_settings"
+    store.settings.year_century, store.settings.date_order = 1900, "DMY"
+    assert client.post("/api/captures", json=manifest).status_code == 200
+    assert client.post("/api/captures", json={**manifest, "timestamp_policy": {"century": 1900 if century != 1900 else 2000}}).status_code == 409
+    assert run_one(store)
+    receipt = next(r for g in state(client)["groups"] for r in g["receipts"] if r["id"] == manifest["id"])
+    assert receipt["date"] == expected and receipt["timestamp_review"] == 1
+    saved = client.get(f"/api/receipts/{manifest['id']}/evidence").json()
+    assert saved["capture"]["timestamp_policy"] == {"century": century}
+    assert saved["processing"]["analysis"]["policy"]["effective"] == {"date_order": "MDY", "century": century}
+
+
+def test_default_scan_century_is_snapshotted_before_processing(cached):
+    from server.storage import current_century
+    client, store, _, _ = cached
+    assert store.settings.year_century == current_century()
+    store.settings.date_order = "MDY"
+    manifest, _ = capture(client, store, process=False)
+    store.settings.year_century = 1900
+    assert run_one(store)
+    receipt = next(r for g in state(client)["groups"] for r in g["receipts"] if r["id"] == manifest["id"])
+    assert receipt["date"] == f"{current_century() + 24}-06-01"
+    assert client.post("/api/captures", json=manifest).status_code == 200
+
+
+@pytest.mark.parametrize("setting,expected", [(None, 2000), ("current", 2000), ("1900", 1900), ("2000", 2000), ("none", None)])
+def test_environment_century_default_and_overrides(monkeypatch, setting, expected):
+    from server.storage import Settings
+    monkeypatch.setattr("server.storage.current_century", lambda: 2000)
+    if setting is None:
+        monkeypatch.delenv("TWO_DIGIT_YEAR_CENTURY", raising=False)
+    else:
+        monkeypatch.setenv("TWO_DIGIT_YEAR_CENTURY", setting)
+    assert Settings.environment().year_century == expected
+
+
+@pytest.mark.parametrize("policy", [{"century": 2100}, {"century": "2000"}, {"century": 2000, "extra": True}])
+def test_capture_rejects_invalid_scan_policy(cached, policy):
+    import uuid
+    client, _, manifest, _ = cached
+    assert client.post("/api/captures", json={**manifest, "id": str(uuid.uuid4()), "timestamp_policy": policy}).status_code == 422
+
+
 def test_new_request_supersedes_pending_analysis_and_rejects_stale_versions(cached):
     client, store, manifest, _ = cached
     first = request(client, manifest["id"]).json()

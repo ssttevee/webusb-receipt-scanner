@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from PIL import Image
 
 from .drive import Drive
-from .analysis_jobs import current_run, processing_active, queue_analysis, read_evidence, run_info
+from .analysis_jobs import current_run, ensure_run, processing_active, queue_analysis, read_evidence, run_info
 from .models import AnalysisRequest, Approval, Capture, Edit, Membership, Version
 from .storage import Settings, Store, digest, durable_write, encode, ensure_directory, sync_directory
 
@@ -105,7 +105,10 @@ def create_app(settings=None, drive=None):
 
     @app.post("/api/captures")
     def begin(manifest: Capture):
-        value = encode(manifest.model_dump())
+        metadata = manifest.model_dump()
+        if manifest.timestamp_policy is None:
+            metadata.pop("timestamp_policy")  # Keep older pending uploads byte-for-byte compatible.
+        value = encode(metadata)
         with store.transaction() as connection:
             existing = connection.execute("SELECT * FROM captures WHERE id=?", (manifest.id,)).fetchone()
             if existing:
@@ -187,6 +190,7 @@ def create_app(settings=None, drive=None):
             connection.execute("INSERT INTO groups(id,created) VALUES(?,?)", (group_id, now))
             connection.execute("INSERT INTO receipts(id,group_id,languages,created) VALUES(?,?,?,?)",
                                (identity, group_id, encode(manifest["languages"]), now))
+            ensure_run(store, connection, connection.execute("SELECT * FROM receipts WHERE id=?", (identity,)).fetchone())
             store.enqueue(connection, "process", identity)
         return {"id": identity, "sha256": manifest["sha256"], "durable": True}
 

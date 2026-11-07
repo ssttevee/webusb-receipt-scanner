@@ -47,6 +47,9 @@ def ensure_run(store, connection, receipt):
     identity = str(uuid.uuid4())
     version = receipt["analysis_version"] + 1
     policy = policy_snapshot(store.settings)
+    manifest = json.loads(connection.execute("SELECT manifest FROM captures WHERE id=?", (receipt["id"],)).fetchone()[0])
+    if manifest.get("timestamp_policy") is not None:
+        policy = policy_snapshot(store.settings, century=manifest["timestamp_policy"]["century"], source="scan_settings")
     mode, state = "ocr", "queued"
     path, checksum = None, None
     if receipt["evidence"] and receipt["state"] == "ready":
