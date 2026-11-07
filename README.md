@@ -43,6 +43,8 @@ docker build --platform linux/amd64 -f Dockerfile.ocr -t receipt-scanner:ocr .
 
 Use `receipt-scanner:ocr` with the same run command and mounts. Its [combined-corpus result](docs/plans/receipt-selective-fallback-2026-11-06.md) is 31 matching proposals and 22 review cases. The fallback has a hard inference deadline and a bounded child process. The base `:dev` image keeps the smaller primary-only path.
 
+Staged receipts also support explicit date conventions, saved-OCR reparse, fresh OCR and immutable analysis history. The [policy-assisted experiment](docs/plans/receipt-convention-reanalysis-2026-11-06.md) reached 40 matching proposals from 53 receipts with nine supplied conventions. Those conventions are explicit operator inputs; timestamp confirmation remains mandatory.
+
 See [runtime and development instructions](docs/application-runtime.md) for volumes, OAuth, checks, recovery and current verification limits.
 
 ## Workstation sample collector

@@ -62,6 +62,9 @@ def test_two_digit_year_requires_explicit_policy():
     assert proposal("08/14/24 14:22", century=2000)["selected"]["date"] == "2024-08-14"
     assert proposal("08/14/24 14:22", century=1900)["selected"]["date"] == "1924-08-14"
     assert proposal("24/05/29 19:37:32", century=2000, date_order="YMD")["selected"]["date"] == "2024-05-29"
+    mixed = proposal("24/05/29 19:37:32", "05/29/2024 19:37:34", century=2000, date_order="YMD")
+    assert mixed["selected"]["date"] == "2024-05-29"
+    assert mixed["selected"]["time"] == "19:37:32"
 
 
 @pytest.mark.parametrize("text,reason", [
@@ -74,6 +77,15 @@ def test_invalid_source_goes_to_review(text, reason):
     result = proposal(text)
     assert result["selected"] is None
     assert reason in result["issues"]
+
+
+def test_damaged_meridiem_is_not_a_24_hour_clock():
+    result = proposal("07/28/26 6:22:25 PH", "07/28/26 18:22:51", date_order="MDY", century=2000)
+    assert result["selected"] is None
+    assert "unrecognized_meridiem" in result["issues"]
+    valid = proposal("07/28/26 6:22:25 PM", "07/28/26 18:22:51", date_order="MDY", century=2000)
+    assert valid["selected"]["time"] == "18:22:25"
+    assert proposal("12/21/2021 12:45:42 PH")["selected"] is None
 
 
 def test_nontransaction_times_and_date_ranges_are_rejected():

@@ -30,6 +30,9 @@ def main():
     parser.add_argument("--expect-fallback-state", choices=("accepted", "no_proposal", "skipped", "timeout"))
     parser.add_argument("--languages", nargs="+", choices=("eng", "fra", "jpn", "chi_tra", "chi_sim"),
                         default=["eng", "fra", "jpn", "chi_tra", "chi_sim"])
+    parser.add_argument("--reprocess-mode", choices=("parse", "ocr"))
+    parser.add_argument("--date-order", choices=("MDY", "DMY", "YMD"))
+    parser.add_argument("--century", type=int, choices=(1900, 2000))
     args = parser.parse_args()
     assert docker("image", "inspect", args.image, "--format", "{{.Architecture}}") == "amd64"
     with socket.socket() as listener:
@@ -126,6 +129,27 @@ def main():
         health_command = json.loads(docker("inspect", name, "--format", "{{json .Config.Healthcheck.Test}}"))
         assert health_command[0] == "CMD-SHELL"
         docker("exec", name, "sh", "-c", health_command[1])
+        if args.reprocess_mode:
+            old_evidence = evidence
+            old_id = evidence["analysis"]["id"]
+            run = request("POST", f"/api/receipts/{identity}/analyze", {"version": group["version"], "mode": args.reprocess_mode,
+                          "date_order": args.date_order, "century": args.century})["analysis"]
+            for _ in range(240):
+                group = request("GET", "/api/state")["groups"][0]
+                current = group["receipts"][0]["analysis"]
+                if current["id"] == run["id"] and current["state"] == "ready":
+                    break
+                if current["state"] == "failed":
+                    raise RuntimeError("Reanalysis failed")
+                time.sleep(0.5)
+            else:
+                raise RuntimeError("Reanalysis did not complete")
+            evidence = request("GET", f"/api/receipts/{identity}/evidence")
+            assert request("GET", f"/api/receipts/{identity}/evidence?analysis_id={old_id}") == old_evidence
+            assert evidence["analysis"]["policy"]["effective"] == {"date_order": args.date_order, "century": args.century}
+            assert evidence["processing"]["extraction"]["selected"]["date"] == labels["date"]
+            if args.reprocess_mode == "parse":
+                assert evidence["processing"]["ocr"]["reparse"]["fresh_ocr"] is False
         proposal = evidence["processing"]["extraction"]["selected"]
         assert group["receipts"][0]["date"] == (proposal["date"] if proposal else None)
         assert group["receipts"][0]["timestamp_review"] == 1  # OCR never confirms its own proposal.
@@ -158,6 +182,8 @@ def main():
         print("PASS: amd64 container, five OCR packs, chunk resume after recreation, OCR evidence, manual review, approval, physical PDF size, cleanup and approved artifact recovery.")
         if args.bundle:
             print("PASS: embedded real receipt PDF pixels exactly match the original raw SHA-256.")
+        if args.reprocess_mode:
+            print("PASS: explicit receipt convention, durable reanalysis, immutable history and unconfirmed proposal before manual approval.")
     finally:
         subprocess.run(["docker", "rm", "-f", name], capture_output=True)
         for volume in volumes.values():

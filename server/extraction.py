@@ -5,7 +5,7 @@ import hashlib
 import re
 import unicodedata
 
-VERSION = "timestamp-evidence-v2"
+VERSION = "timestamp-evidence-v3"
 
 
 @dataclass
@@ -86,7 +86,7 @@ def dates(text, order=None, century=None):
                         issues.append("two_digit_year_requires_century")
                     else:
                         year += century
-                interpretations = [order] if order else ["MDY", "DMY", "YMD"] if len(raw_year) == 2 else ["MDY", "DMY"]
+                interpretations = ([order] if order else ["MDY", "DMY", "YMD"]) if len(raw_year) == 2 else ([order] if order in ("MDY", "DMY") else ["MDY", "DMY"])
                 candidates = []
                 for interpretation in interpretations:
                     if interpretation == "YMD":
@@ -131,6 +131,8 @@ def times(text, date_spans=()):
                 suffix = {"午前": "am", "午後": "pm", None: ""}[marker]
             hour, minute = int(hour), int(minute)
             issues = []
+            if pattern is TIME and not suffix and hour <= 12 and re.match(r"[ap][a-z]\b", text[match.end():], re.I):
+                issues.append("unrecognized_meridiem")
             if minute > 59 or hour > 23 or (second is not None and int(second) > 59):
                 issues.append("invalid_printed_time")
             if suffix:

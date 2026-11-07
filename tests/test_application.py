@@ -370,7 +370,7 @@ def test_schema_one_migration_preserves_manual_timestamps(tmp_path):
     connection.close()
     store = Store(settings)
     with store.transaction() as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
         manual = dict(connection.execute("SELECT * FROM receipts WHERE id='manual'").fetchone())
         assert manual["date"] == "2021-12-21" and manual["time"] == "12:45:42"
         assert manual["field_source"] == "manual" and manual["timestamp_review"] == 0
@@ -386,9 +386,8 @@ def test_worker_fallback_proposal_retains_sources_and_requires_confirmation(runt
     primary = evidence(supported=False)
     monkeypatch.setattr(worker, "recognize", lambda *args, **kwargs: primary)
     store.settings.ocr = True
-    with store.transaction() as connection:
-        connection.execute("UPDATE receipts SET state='queued'")
-        connection.execute("UPDATE jobs SET state='pending',available=0 WHERE kind='process'")
+    initial = state(client)["groups"][0]
+    assert client.post(f"/api/receipts/{manifest['id']}/analyze", json={"version": initial["version"], "mode": "ocr"}).status_code == 202
     fallback = Client(evidence())
     assert run_one(store, fallback=fallback)
     group = state(client)["groups"][0]
@@ -413,9 +412,8 @@ def test_worker_fallback_timeout_retains_staging_and_manual_review(runtime, monk
     manifest, original = capture(client, store)
     monkeypatch.setattr(worker, "recognize", lambda *args, **kwargs: evidence(supported=False))
     store.settings.ocr = True
-    with store.transaction() as connection:
-        connection.execute("UPDATE receipts SET state='queued'")
-        connection.execute("UPDATE jobs SET state='pending',available=0 WHERE kind='process'")
+    initial = state(client)["groups"][0]
+    assert client.post(f"/api/receipts/{manifest['id']}/analyze", json={"version": initial["version"], "mode": "ocr"}).status_code == 202
     assert run_one(store, fallback=Client(None, "timeout"))
     receipt = state(client)["groups"][0]["receipts"][0]
     assert receipt["state"] == "ready" and receipt["date"] is None and receipt["time"] is None

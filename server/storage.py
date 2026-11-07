@@ -100,7 +100,8 @@ CREATE TABLE receipts(id TEXT PRIMARY KEY REFERENCES captures(id), group_id TEXT
  date TEXT, time TEXT, vendor TEXT, complete INTEGER NOT NULL DEFAULT 0,
  readable INTEGER NOT NULL DEFAULT 0, languages TEXT NOT NULL DEFAULT '["eng"]',
  master TEXT, preview TEXT, evidence TEXT, error TEXT, created REAL NOT NULL,
- field_source TEXT NOT NULL DEFAULT 'unresolved', timestamp_review INTEGER NOT NULL DEFAULT 1);
+ field_source TEXT NOT NULL DEFAULT 'unresolved', timestamp_review INTEGER NOT NULL DEFAULT 1,
+ analysis_version INTEGER NOT NULL DEFAULT 0, active_analysis TEXT);
 CREATE TABLE exports(id TEXT PRIMARY KEY, group_id TEXT NOT NULL REFERENCES groups(id),
  version INTEGER NOT NULL, path TEXT NOT NULL UNIQUE, snapshot TEXT NOT NULL,
  state TEXT NOT NULL DEFAULT 'reserved', sha256 TEXT, drive_id TEXT, created REAL NOT NULL);
@@ -111,7 +112,11 @@ CREATE TABLE jobs(id TEXT PRIMARY KEY, kind TEXT NOT NULL, target TEXT NOT NULL,
 CREATE TABLE oauth(state TEXT PRIMARY KEY, expires REAL NOT NULL);
 CREATE INDEX receipt_group ON receipts(group_id, page_order);
 CREATE INDEX job_queue ON jobs(state, available, lease_until);
-PRAGMA user_version=2;
+CREATE TABLE analysis_runs(id TEXT PRIMARY KEY, receipt_id TEXT NOT NULL REFERENCES captures(id),
+ version INTEGER NOT NULL, mode TEXT NOT NULL, policy TEXT NOT NULL, state TEXT NOT NULL,
+ base_id TEXT REFERENCES analysis_runs(id), evidence_path TEXT, evidence_sha256 TEXT,
+ error TEXT, created REAL NOT NULL, UNIQUE(receipt_id,version));
+PRAGMA user_version=3;
 """
 
 
@@ -130,7 +135,16 @@ class Store:
                 connection.execute("ALTER TABLE receipts ADD COLUMN timestamp_review INTEGER NOT NULL DEFAULT 1")
                 connection.execute("UPDATE receipts SET field_source='manual',timestamp_review=0 WHERE date IS NOT NULL AND time IS NOT NULL")
                 connection.execute("PRAGMA user_version=2")
-            elif version != 2:
+                version = 2
+            if version == 2:
+                connection.execute("ALTER TABLE receipts ADD COLUMN analysis_version INTEGER NOT NULL DEFAULT 0")
+                connection.execute("ALTER TABLE receipts ADD COLUMN active_analysis TEXT")
+                connection.execute("""CREATE TABLE analysis_runs(id TEXT PRIMARY KEY, receipt_id TEXT NOT NULL REFERENCES captures(id),
+                  version INTEGER NOT NULL, mode TEXT NOT NULL, policy TEXT NOT NULL, state TEXT NOT NULL,
+                  base_id TEXT REFERENCES analysis_runs(id), evidence_path TEXT, evidence_sha256 TEXT,
+                  error TEXT, created REAL NOT NULL, UNIQUE(receipt_id,version))""")
+                connection.execute("PRAGMA user_version=3")
+            elif version not in (0, 3):
                 raise RuntimeError("Unsupported database schema; use the matching application version")
         os.chmod(self.database, 0o600)
 

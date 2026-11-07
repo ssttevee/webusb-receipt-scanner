@@ -19,7 +19,8 @@ from fastapi.staticfiles import StaticFiles
 from PIL import Image
 
 from .drive import Drive
-from .models import Approval, Capture, Edit, Membership, Version
+from .analysis_jobs import current_run, processing_active, queue_analysis, read_evidence, run_info
+from .models import AnalysisRequest, Approval, Capture, Edit, Membership, Version
 from .storage import Settings, Store, digest, durable_write, encode, ensure_directory, sync_directory
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -97,7 +98,7 @@ def create_app(settings=None, drive=None):
     def health():
         with store.transaction() as connection:
             connection.execute("SELECT 1").fetchone()
-        return {"ok": True, "schema": 2, "driver_ready": (ROOT / "scanner-driver/build/provenance.json").exists(),
+        return {"ok": True, "schema": 3, "driver_ready": (ROOT / "scanner-driver/build/provenance.json").exists(),
                 "free_work_bytes": shutil.disk_usage(settings.work).free, "ocr_enabled": settings.ocr,
                 "ocr_backend": settings.ocr_backend, "ocr_fallback": settings.ocr_fallback,
                 "fallback_timeout_seconds": settings.fallback_timeout}
@@ -200,10 +201,12 @@ def create_app(settings=None, drive=None):
                     for private in ("master", "preview", "evidence"):
                         item.pop(private)
                     item["languages"] = json.loads(item["languages"])
+                    item["analysis"] = run_info(current_run(connection, row))
                     group["receipts"].append(item)
                 group["exports"] = [dict(row) for row in connection.execute("SELECT id,path,state,sha256,drive_id,version FROM exports WHERE group_id=?", (group["id"],))]
             jobs = [dict(row) for row in connection.execute("SELECT id,kind,target,state,attempts,error FROM jobs ORDER BY available DESC")]
-        return {"groups": groups, "jobs": jobs, "drive": drive.status()}
+        return {"groups": groups, "jobs": jobs, "drive": drive.status(),
+                "analysis_defaults": {"date_order": settings.date_order, "century": settings.year_century}}
 
     @app.get("/api/receipts/{identity}/image")
     def image(identity: str, top: int | None = None):
@@ -222,11 +225,40 @@ def create_app(settings=None, drive=None):
         return Response(buffer.getvalue(), media_type="image/png", headers={"X-Image-Height": str(master.height)})
 
     @app.get("/api/receipts/{identity}/evidence")
-    def evidence(identity: str):
+    def evidence(identity: str, analysis_id: str | None = None):
         with store.transaction() as connection:
             receipt = receipt_row(connection, identity)
             capture = capture_row(connection, identity)
-        return {"capture": json.loads(capture["manifest"]), "processing": json.loads(receipt["evidence"]) if receipt["evidence"] else None}
+            run = current_run(connection, receipt)
+            if analysis_id:
+                run = connection.execute("SELECT * FROM analysis_runs WHERE id=? AND receipt_id=?", (analysis_id, identity)).fetchone()
+                if not run or not run["evidence_path"]:
+                    fail("Saved analysis is not ready", 404)
+                try:
+                    processing = read_evidence(run)
+                except ValueError as error:
+                    fail(str(error))
+            else:
+                processing = json.loads(receipt["evidence"]) if receipt["evidence"] else None
+        return {"capture": json.loads(capture["manifest"]), "processing": processing, "analysis": run_info(run)}
+
+    @app.get("/api/receipts/{identity}/analyses")
+    def analyses(identity: str):
+        with store.transaction() as connection:
+            receipt_row(connection, identity)
+            return {"analyses": [run_info(row) for row in connection.execute("SELECT * FROM analysis_runs WHERE receipt_id=? ORDER BY version DESC", (identity,))]}
+
+    @app.post("/api/receipts/{identity}/analyze", status_code=202)
+    def request_analysis(identity: str, body: AnalysisRequest):
+        with store.transaction() as connection:
+            receipt = receipt_row(connection, identity)
+            group_for_edit(connection, receipt["group_id"], body.version)
+            try:
+                run = queue_analysis(store, connection, receipt, body)
+            except ValueError as error:
+                fail(str(error))
+            group = store.group(connection, receipt["group_id"])
+            return {"analysis": run_info(run), "group_id": group["id"], "version": group["version"]}
 
     @app.delete("/api/receipts/{identity}")
     def delete_receipt(identity: str, body: Version):
@@ -234,10 +266,12 @@ def create_app(settings=None, drive=None):
             receipt = receipt_row(connection, identity)
             group = group_for_edit(connection, receipt["group_id"], body.version)
             # Even an expired lease may still have a live worker writing files.
-            if connection.execute("SELECT 1 FROM jobs WHERE kind='process' AND target=? AND state='running'", (identity,)).fetchone():
+            if processing_active(connection, identity):
                 fail("Scan is still processing; retry deletion when processing finishes")
             store.changed(connection, group["id"])
             connection.execute("DELETE FROM jobs WHERE kind='process' AND target=?", (identity,))
+            connection.execute("DELETE FROM jobs WHERE kind='analyze' AND target IN(SELECT id FROM analysis_runs WHERE receipt_id=?)", (identity,))
+            connection.execute("DELETE FROM analysis_runs WHERE receipt_id=?", (identity,))
             connection.execute("DELETE FROM receipts WHERE id=?", (identity,))
             # Keep the capture ID as a tombstone so an upload retry cannot resurrect it.
             connection.execute("UPDATE captures SET state='deleted' WHERE id=?", (identity,))
@@ -299,6 +333,8 @@ def create_app(settings=None, drive=None):
             fail("Every page needs a date, time, readable master and confirmed physical bottom before approval")
         if any(receipt["timestamp_review"] for receipt in receipts):
             fail("Confirm the proposed timestamp with Save review before approval")
+        if any((current_run(connection, receipt) or {"state": "ready"})["state"] in ("queued", "running") for receipt in receipts):
+            fail("Wait for the current analysis before approval")
         return receipts
 
     @app.post("/api/groups/{identity}/prepare")
@@ -377,6 +413,13 @@ def create_app(settings=None, drive=None):
             job = connection.execute("SELECT * FROM jobs WHERE id=?", (identity,)).fetchone()
             if not job or job["state"] != "failed":
                 fail("Only failed jobs can be retried")
+            if job["kind"] == "analyze":
+                run = connection.execute("SELECT * FROM analysis_runs WHERE id=?", (job["target"],)).fetchone()
+                receipt = receipt_row(connection, run["receipt_id"]) if run else None
+                if not receipt or receipt["active_analysis"] != run["id"] or store.group(connection, receipt["group_id"])["state"] != "staging":
+                    fail("This analysis is obsolete; use the current receipt")
+                connection.execute("UPDATE analysis_runs SET state='queued',error=NULL WHERE id=?", (run["id"],))
+                store.changed(connection, receipt["group_id"])
             connection.execute("UPDATE jobs SET state='pending',attempts=0,available=?,error=NULL WHERE id=?", (time.time(), identity))
         return {"queued": True}
 

@@ -6,12 +6,15 @@ from pathlib import Path
 import signal
 import threading
 import time
+import uuid
 
 import img2pdf
 import numpy as np
 from PIL import Image
 
 from .drive import Drive
+from .analysis_jobs import ensure_run, owns_job, read_evidence
+from .extraction import VERSION as EXTRACTOR_VERSION
 from .recognition import recognize
 from .storage import Settings, Store, digest, durable_write, encode, sync_directory
 
@@ -24,7 +27,7 @@ def image_bytes(image, format, **kwargs):
     return buffer.getvalue()
 
 
-def process(store, identity, ocr_backend=None, fallback=None):
+def process(store, identity, ocr_backend=None, fallback=None, job=None):
     settings = store.settings
     with store.transaction() as connection:
         row = connection.execute("SELECT * FROM captures WHERE id=?", (identity,)).fetchone()
@@ -34,6 +37,9 @@ def process(store, identity, ocr_backend=None, fallback=None):
             if digest(receipt["master"]) != json.loads(receipt["evidence"])["master_sha256"]:
                 raise ValueError("Previously committed master checksum failed")
             return  # Recovered lease after commit, possibly after approved cleanup.
+        if not owns_job(connection, job):
+            return
+        run = ensure_run(store, connection, receipt)
     directory = settings.work / "captures" / identity
     original = directory / "original.bin"
     if digest(original) != manifest["sha256"]:
@@ -62,34 +68,89 @@ def process(store, identity, ocr_backend=None, fallback=None):
     durable_write(preview, image_bytes(thumbnail, "PNG"))
     evidence = {"master_sha256": digest(master), "master_kind": "lossless_reference_v1",
                 "date_time_source": "manual_review_required", "ocr": None}
-    if settings.ocr:
-        ocr_started = time.monotonic()
-        evidence["ocr"] = recognize(image, dpi=manifest["dpi_y"], languages=manifest["languages"], output=directory / "ocr",
-                                    date_order=settings.date_order, century=settings.year_century, backend=ocr_backend)
-        if fallback is not None:
-            from .ocr_pipeline import route
-            evidence["ocr"] = route(evidence["ocr"], fallback, master, output=directory / "ocr" / "fallback",
-                                    dpi=manifest["dpi_y"], languages=manifest["languages"], date_order=settings.date_order,
-                                    century=settings.year_century)
-            evidence["ocr"]["seconds"] = round(time.monotonic() - ocr_started, 6)
-        evidence["extraction"] = evidence["ocr"].pop("extraction")
-        evidence["date_time_source"] = evidence["extraction"]["version"]
     image.close()
-    durable_write(directory / "evidence.json", encode(evidence).encode())
     with store.transaction() as connection:
-        # A stale retry must not invalidate manual edits to an already-ready receipt.
-        receipt = connection.execute("SELECT * FROM receipts WHERE id=?", (identity,)).fetchone()
-        if receipt["state"] != "ready":
+        if not owns_job(connection, job):
+            return
+        connection.execute("UPDATE receipts SET master=?,preview=?,evidence=? WHERE id=?", (str(master), str(preview), encode(evidence), identity))
+    analyze(store, run["id"], ocr_backend, fallback, job)
+
+
+def analyze(store, run_id, ocr_backend=None, fallback=None, job=None):
+    with store.transaction() as connection:
+        run = connection.execute("SELECT * FROM analysis_runs WHERE id=?", (run_id,)).fetchone()
+        if not run or not owns_job(connection, job):
+            return
+        if run["state"] == "ready":
+            read_evidence(run)
+            return
+        receipt = connection.execute("SELECT * FROM receipts WHERE id=?", (run["receipt_id"],)).fetchone()
+        if not receipt or receipt["active_analysis"] != run_id:
+            connection.execute("UPDATE analysis_runs SET state='superseded' WHERE id=?", (run_id,))
+            return
+        capture = json.loads(connection.execute("SELECT manifest FROM captures WHERE id=?", (receipt["id"],)).fetchone()[0])
+        connection.execute("UPDATE analysis_runs SET state='running',error=NULL WHERE id=?", (run_id,))
+        base = connection.execute("SELECT * FROM analysis_runs WHERE id=?", (run["base_id"],)).fetchone() if run["base_id"] else None
+    policy = json.loads(run["policy"])
+    if run["mode"] == "ocr" and run["base_id"] and not store.settings.ocr:
+        raise ValueError("OCR was disabled before this recognition run; keep the prior evidence or enable OCR and retry")
+    master_sha = json.loads(receipt["evidence"])["master_sha256"]
+    if digest(receipt["master"]) != master_sha:
+        raise ValueError("Reference master checksum failed before analysis")
+    root = store.settings.work / "captures" / receipt["id"] / "analyses" / run_id
+    output = root / (job["owner"] if job else str(uuid.uuid4()))
+    evidence, path = None, None
+    for candidate in sorted(root.glob("*/evidence.json")):
+        marker = candidate.with_suffix(".sha256")
+        if not marker.exists() or digest(candidate) != marker.read_text():
+            continue
+        saved = json.loads(candidate.read_text())
+        metadata = saved.get("analysis", {})
+        if metadata.get("id") == run_id and metadata.get("policy") == policy and metadata.get("extractor") == EXTRACTOR_VERSION and saved.get("master_sha256") == master_sha:
+            evidence, path = saved, candidate
+            break
+    if evidence is None:
+        evidence = {"master_sha256": master_sha, "master_kind": "lossless_reference_v1", "date_time_source": "manual_review_required", "ocr": None}
+        if run["mode"] == "parse":
+            from .reanalysis import reparse_ocr
+            prior = read_evidence(base)
+            evidence["ocr"] = reparse_ocr(prior["ocr"], policy["effective"])
+        elif store.settings.ocr:
+            ocr_started = time.monotonic()
+            with Image.open(receipt["master"]) as image:
+                evidence["ocr"] = recognize(image, dpi=capture["dpi_y"], languages=capture["languages"], output=output / "ocr",
+                                             date_order=policy["effective"]["date_order"], century=policy["effective"]["century"], backend=ocr_backend)
+            if fallback is not None:
+                from .ocr_pipeline import route
+                evidence["ocr"] = route(evidence["ocr"], fallback, receipt["master"], output=output / "ocr" / "fallback",
+                                         dpi=capture["dpi_y"], languages=capture["languages"],
+                                         date_order=policy["effective"]["date_order"], century=policy["effective"]["century"])
+            evidence["ocr"]["seconds"] = round(time.monotonic() - ocr_started, 6)
+        if evidence["ocr"] is not None:
+            evidence["extraction"] = evidence["ocr"].pop("extraction")
+            evidence["date_time_source"] = evidence["extraction"]["version"]
+        evidence["analysis"] = {"id": run_id, "version": run["version"], "mode": run["mode"], "policy": policy, "extractor": EXTRACTOR_VERSION}
+        path = output / "evidence.json"
+        durable_write(path, encode(evidence).encode())
+        durable_write(path.with_suffix(".sha256"), digest(path).encode())
+    with store.transaction() as connection:
+        if not owns_job(connection, job):
+            return
+        receipt = connection.execute("SELECT * FROM receipts WHERE id=?", (run["receipt_id"],)).fetchone()
+        active = receipt and receipt["active_analysis"] == run_id and receipt["analysis_version"] == run["version"] and store.group(connection, receipt["group_id"])["state"] == "staging"
+        connection.execute("UPDATE analysis_runs SET state=?,evidence_path=?,evidence_sha256=?,error=NULL WHERE id=?",
+                           ("ready" if active else "superseded", str(path), digest(path), run_id))
+        if active:
             selected = (evidence.get("extraction") or {}).get("selected")
             manual = receipt["field_source"] == "manual"
             connection.execute("""UPDATE receipts SET state='ready',master=?,preview=?,evidence=?,error=NULL,
               date=?,time=?,field_source=?,timestamp_review=? WHERE id=?""",
-              (str(master), str(preview), encode(evidence), receipt["date"] if manual else selected["date"] if selected else None,
+              (receipt["master"], receipt["preview"], encode(evidence), receipt["date"] if manual else selected["date"] if selected else None,
                receipt["time"] if manual else selected["time"] if selected else None,
-               "manual" if manual else "ocr" if selected else "unresolved", 0 if manual else 1, identity))
+               "manual" if manual else "ocr" if selected else "unresolved", 0 if manual else 1, receipt["id"]))
             store.changed(connection, receipt["group_id"])
             if selected and not manual:
-                store.regroup(connection, identity)
+                store.regroup(connection, receipt["id"])
 
 
 def finalize_export(store, identity):
@@ -187,7 +248,9 @@ def run_one(store, drive=None, ocr_backend=None, fallback=None):
     thread.start()
     try:
         if job["kind"] == "process":
-            process(store, job["target"], ocr_backend, fallback)
+            process(store, job["target"], ocr_backend, fallback, job)
+        elif job["kind"] == "analyze":
+            analyze(store, job["target"], ocr_backend, fallback, job)
         elif job["kind"] == "approve":
             finalize_export(store, job["target"])
         elif job["kind"] == "cleanup":
@@ -209,10 +272,15 @@ def run_one(store, drive=None, ocr_backend=None, fallback=None):
         message = str(error) if isinstance(error, ValueError) else "Processing failed; retained data can be retried"
         retry = job["attempts"] < 3
         with store.transaction() as connection:
+            if not owns_job(connection, job):
+                return True
             connection.execute("UPDATE jobs SET state=?,error=?,available=?,lease_until=NULL WHERE id=? AND owner=?",
                 ("pending" if retry else "failed", message, time.time() + 2 ** job["attempts"], job["id"], job["owner"]))
             if not retry and job["kind"] == "process":
                 connection.execute("UPDATE receipts SET state='failed',error=? WHERE id=?", (message, job["target"]))
+                connection.execute("UPDATE analysis_runs SET state='failed',error=? WHERE id=(SELECT active_analysis FROM receipts WHERE id=?)", (message, job["target"]))
+            if not retry and job["kind"] == "analyze":
+                connection.execute("UPDATE analysis_runs SET state='failed',error=? WHERE id=? AND state<>'superseded'", (message, job["target"]))
             if not retry and job["kind"] == "approve":
                 connection.execute("UPDATE groups SET state='approval_failed' WHERE id=(SELECT group_id FROM exports WHERE id=?)", (job["target"],))
     finally:

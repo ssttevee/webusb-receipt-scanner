@@ -30,6 +30,12 @@ Ambiguous numeric order stays unresolved unless independent printed evidence res
 
 Evidence includes extractor/recognizer versions, parser policy, raw OCR lines, original-coordinate boxes, OCR tool scores, selected candidate/reason and unresolved alternatives. Tool scores are not measured date accuracy. New captures use this path; existing manually reviewed fields remain intact.
 
+### Receipt-local conventions and reanalysis
+
+Open **Date convention & reprocess** on a staged receipt. Choose numeric order and century, use application defaults, or explicitly choose No assumption. **Apply convention to saved OCR** creates a fast cached reparse; **Run OCR again** creates a fresh recognition run with the same master. Each choice applies only to that receipt and is recorded in analysis history. See the [policy-assisted experiment](plans/receipt-convention-reanalysis-2026-11-06.md) for results and their manual-input scope.
+
+The API snapshots effective settings when the run is queued. A later environment change does not reinterpret a pending user request. Old evidence remains inspectable. New runs invalidate reserved approvals; active work blocks approval. Stale runs and lost job owners cannot publish over newer analyses or manual fields. A failed reanalysis leaves the image and last evidence available for manual resolution. Unsaved local field edits disable preparation/approval until saved or reloaded.
+
 ## Image contract
 
 - HTTP port: **8000**. No application login; existing external authentication is the deployment boundary.
@@ -43,12 +49,12 @@ Evidence includes extractor/recognizer versions, parser policy, raw OCR lines, o
 
 | Mount | Contents |
 | --- | --- |
-| `/state` | SQLite database/WAL (schema version 2), OAuth state, protected Drive refresh token, worker heartbeat |
+| `/state` | SQLite database/WAL (schema version 3), analysis run policies/history, OAuth state, protected Drive refresh token, worker heartbeat |
 | `/work` | Pending chunks/originals, reference TIFFs, previews, private OCR/evidence |
 | `/samples` | Reserved for pinned production samples; this slice does not populate it |
 | `/archive` | Approved PDFs in year/month paths; `.exports/{id}/` holds selected masters, PDF bytes and immutable manifest |
 
-Use a local locking/durability-compatible filesystem for `/state`. Preserve mounts across container recreation. Host storage, Caddy and Authelia setup belong to the deployment owner. Database transitions use SQLite WAL, `synchronous=FULL`, foreign keys and explicit transactions. Schema 2 adds field provenance and timestamp confirmation through a transaction-safe migration from schema 1. Existing complete manual fields retain their confirmation; unknown future versions are rejected. A schema-1-only image cannot open schema 2. SQLAlchemy/Alembic adoption remains a later decision.
+Use a local locking/durability-compatible filesystem for `/state`. Preserve mounts across container recreation. Host storage, Caddy and Authelia setup belong to the deployment owner. Database transitions use SQLite WAL, `synchronous=FULL`, foreign keys and explicit transactions. Schema 3 migrates from schema 1/2 and adds receipt analysis versions and immutable run references. Existing complete manual fields retain confirmation; legacy evidence is snapshotted before its first explicit reanalysis. Older schema-only images cannot open schema 3. SQLAlchemy/Alembic adoption remains a later decision.
 
 Files use temporary writes on the destination filesystem, fsync, finalization and directory fsync. Archive writes never rely on a cross-mount atomic rename. Ready exports and master checksums are rechecked before cleanup/delivery. App-managed backups are outside application scope.
 
@@ -106,7 +112,7 @@ Native OCR needs Tesseract and the selected packs installed. Native API mode add
 ## Checks and recovery
 
 ```sh
-.venv/bin/python -m pytest tests/test_application.py tests/test_drive.py tests/test_extraction.py tests/test_ocr_comparison.py tests/test_ocr_fallback.py -q
+.venv/bin/python -m pytest tests/test_application.py tests/test_drive.py tests/test_extraction.py tests/test_ocr_comparison.py tests/test_ocr_fallback.py tests/test_reanalysis.py -q
 npm run test:samples
 npx playwright install chromium
 APP_TEST_PYTHON="$PWD/.venv/bin/python" npm run test:app-browser
@@ -132,3 +138,5 @@ The [extraction baseline](plans/receipt-extraction-baseline-2026-11-03.md) recor
 The persistent-API increment passed **59 Python tests** and **3 application browser tests**. Its container checks verify the persistent backend, version, restart recovery and exact real-receipt PDF pixels. Tests include profile reuse/reset, coordinate mapping, checksum and cohort-drift cases. The comparison report retains the measured 53-receipt engine results and emulated-hardware limits. Existing collector stream/server checks passed in the preceding application slice; raw capture does not change in this increment.
 
 The selective-fallback increment passes **74 Python tests** and **4 application browser tests**. Its enhanced-image checks verify a real recovery and forced deadline/child termination, followed by manual approval and exact source-pixel PDF checks. These checks use disposable volumes and preserve the private input bundles.
+
+The current convention/reanalysis increment passes **89 Python tests** and **5 application browser tests**, with schema migration, lease/supersede, manual-edit preservation and unsaved-field approval checks. Live real-sample scenarios validate cached parsing, fresh recognition, AM/PM fallback recovery, immutable history and exact PDF pixels.

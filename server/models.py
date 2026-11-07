@@ -81,3 +81,9 @@ class Membership(Model):
 
 class Approval(Version):
     export_id: str
+
+
+class AnalysisRequest(Version):
+    mode: Literal["parse", "ocr"] = "parse"
+    date_order: Literal["inherit", "MDY", "DMY", "YMD"] | None = "inherit"
+    century: Literal["inherit", 1900, 2000] | None = "inherit"

@@ -1,5 +1,5 @@
 import { render } from "preact";
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import Dexie, { type Table } from "dexie";
 import "./style.css";
 import "./evidence.css";
@@ -14,7 +14,9 @@ type Pending = { id: string; created: number; blob: Blob; manifest: Manifest };
 type Diagnostic = { id: string; blob: Blob; metadata: unknown };
 type Receipt = { id: string; group_id: string; date: string | null; time: string | null; state: string;
   complete: number; readable: number; vendor: string | null; error: string | null; languages: string[];
-  field_source: "manual" | "ocr" | "unresolved"; timestamp_review: number };
+  field_source: "manual" | "ocr" | "unresolved"; timestamp_review: number; analysis?: AnalysisRun | null };
+type AnalysisRun = { id: string; version: number; mode: string; state: string; error: string | null; has_evidence: boolean;
+  policy: { requested: { date_order: string | null; century: string | number | null }; effective: { date_order: string | null; century: number | null }; source: string } };
 type Candidate = { id: string; dates: string[]; time: string | null; issues: string[];
   sources: { text: string; box: number[]; ocr_confidence: number; pass: string }[] };
 type Extraction = { version: string; status: string; issues: string[]; selected: { date: string; time: string } | null; candidates: Candidate[];
@@ -77,9 +79,10 @@ async function uploadPending(onStatus: (value: string) => void, onChange: () => 
   finally { uploadRunning = false; onChange(); }
 }
 
-function ReceiptEditor({ receipt, group, refresh, selected, select, report }: {
+function ReceiptEditor({ receipt, group, refresh, selected, select, report, onDirty }: {
   receipt: Receipt; group: Group; refresh: () => Promise<void>; selected: boolean;
   select: (value: boolean) => void; report: (value: string) => void;
+  onDirty: (id: string, dirty: boolean) => void;
 }) {
   const [date, setDate] = useState(receipt.date ?? "");
   const [clock, setClock] = useState(receipt.time ?? "");
@@ -94,15 +97,24 @@ function ReceiptEditor({ receipt, group, refresh, selected, select, report }: {
   const [fallbackInfo, setFallbackInfo] = useState<FallbackInfo | null>(null);
   const [busy, setBusy] = useState(false);
   const [baseVersion, setBaseVersion] = useState(group.version);
+  const [dirty, setDirty] = useState(false);
+  useEffect(() => { onDirty(receipt.id, dirty); }, [receipt.id, dirty, onDirty]);
+  useEffect(() => () => onDirty(receipt.id, false), [receipt.id, onDirty]);
   const stale = baseVersion !== group.version;
   useEffect(() => {
     if (receipt.state !== "ready") return;
-    setBaseVersion(group.version); setDate(receipt.date ?? ""); setClock(receipt.time ?? "");
+    if (!dirty && (!receipt.analysis || ["ready", "failed"].includes(receipt.analysis.state))) {
+      setBaseVersion(group.version); setDate(receipt.date ?? ""); setClock(receipt.time ?? "");
+      setVendor(receipt.vendor ?? ""); setComplete(Boolean(receipt.complete)); setReadable(Boolean(receipt.readable));
+    }
+    let active = true;
     void api<{ capture: { height: number }; processing: { extraction?: Extraction; ocr?: { fallback?: FallbackInfo } } | null }>(`/api/receipts/${receipt.id}/evidence`, undefined, "GET").then(result => {
+      if (!active) return;
       setHeight(result.capture.height); setEvidence(result.processing); setExtraction(result.processing?.extraction ?? null);
       setFallbackInfo(result.processing?.ocr?.fallback ?? null);
     }).catch(error => report(String(error)));
-  }, [receipt.state]);
+    return () => { active = false; };
+  }, [receipt.state, receipt.analysis?.id, receipt.analysis?.state]);
   const editable = group.state === "staging" && receipt.state === "ready";
   async function inspect() {
     try {
@@ -115,6 +127,7 @@ function ReceiptEditor({ receipt, group, refresh, selected, select, report }: {
       onChange={event => select(event.currentTarget.checked)} /> Select page <code>{receipt.id.slice(0, 8)}</code></label>
       <span class="badge">{receipt.state}</span></header>
     {receipt.state === "ready" && <img class="thumbnail" src={`/api/receipts/${receipt.id}/image`} alt={`Receipt ${receipt.id.slice(0, 8)} preview`} loading="lazy" onClick={inspect} />}
+    {receipt.state === "ready" && <AnalysisControls receipt={receipt} group={group} refresh={refresh} report={report} />}
     {extraction && <section class="proposal"><strong>{extraction.selected ? "OCR timestamp proposal — confirm against the scan" : "Timestamp needs manual review"}</strong>
       {extraction.routing?.selected_engine === "rapidocr" && <p>RapidOCR fallback supplied this proposal. Inspect both engine source lists.</p>}
       {extraction.routing?.primary_issues.length ? <p class="muted">Primary OCR: {extraction.routing.primary_issues.map(issue => issue.replaceAll("_", " ")).join(" · ")}</p> : null}
@@ -130,26 +143,30 @@ function ReceiptEditor({ receipt, group, refresh, selected, select, report }: {
           </div>)}
         </div>)}
       </details>
+      {extraction.selected && editable && <button class="secondary" onClick={() => {
+        setDate(extraction.selected!.date); setClock(extraction.selected!.time); setDirty(true);
+      }}>Use proposed timestamp</button>}
     </section>}
     <form onSubmit={async event => {
       event.preventDefault(); setBusy(true);
       try { const saved = await api<{ version: number }>(`/api/receipts/${receipt.id}`, { version: baseVersion, date: date || null, time: clock || null,
-        vendor: vendor || null, complete, readable }); setBaseVersion(saved.version); await refresh(); report("Review saved. Same-minute staging groups updated."); }
+        vendor: vendor || null, complete, readable }); await refresh(); setBaseVersion(saved.version); setDirty(false); report("Review saved. Same-minute staging groups updated."); }
       catch (error) { report(String(error)); } finally { setBusy(false); }
     }}>
       <fieldset disabled={!editable || busy || stale}>
-        <label>Transaction date<input type="date" value={date} onInput={event => setDate(event.currentTarget.value)} /></label>
-        <label>Transaction time<input type="time" step="1" value={clock} onInput={event => setClock(event.currentTarget.value)} /></label>
-        <label>Vendor hint (optional)<input value={vendor} maxLength={200} onInput={event => setVendor(event.currentTarget.value)} /></label>
-        <label class="check"><input type="checkbox" checked={complete} onChange={event => setComplete(event.currentTarget.checked)} /> Physical bottom is present</label>
-        <label class="check"><input type="checkbox" checked={readable} onChange={event => setReadable(event.currentTarget.checked)} /> Selected image is readable</label>
+        <label>Transaction date<input type="date" value={date} onInput={event => { setDate(event.currentTarget.value); setDirty(true); }} /></label>
+        <label>Transaction time<input type="time" step="1" value={clock} onInput={event => { setClock(event.currentTarget.value); setDirty(true); }} /></label>
+        <label>Vendor hint (optional)<input value={vendor} maxLength={200} onInput={event => { setVendor(event.currentTarget.value); setDirty(true); }} /></label>
+        <label class="check"><input type="checkbox" checked={complete} onChange={event => { setComplete(event.currentTarget.checked); setDirty(true); }} /> Physical bottom is present</label>
+        <label class="check"><input type="checkbox" checked={readable} onChange={event => { setReadable(event.currentTarget.checked); setDirty(true); }} /> Selected image is readable</label>
         <button type="submit">Save review</button>
       </fieldset>
     </form>
     {stale && editable && <p role="alert">This group changed. <button class="secondary" onClick={() => {
       setDate(receipt.date ?? ""); setClock(receipt.time ?? ""); setVendor(receipt.vendor ?? "");
-      setComplete(Boolean(receipt.complete)); setReadable(Boolean(receipt.readable)); setBaseVersion(group.version);
-    }}>Reload latest review</button></p>}
+      setComplete(Boolean(receipt.complete)); setReadable(Boolean(receipt.readable)); setBaseVersion(group.version); setDirty(false);
+    }}>Reload latest review</button> <button class="secondary" onClick={() => setBaseVersion(group.version)}>Keep local edits</button>
+      <span class="muted"> Server timestamp: {receipt.date || "unresolved"} {receipt.time || "unresolved"}</span></p>}
     <p class="muted">Use the earliest supported transaction timestamp. Missing fields stay in staging. {receipt.languages.join(" + ")}</p>
     {receipt.error && <p role="alert">{receipt.error}</p>}
     {group.state === "staging" && <p><button class="secondary" disabled={busy} onClick={async () => {
@@ -174,12 +191,65 @@ function ReceiptEditor({ receipt, group, refresh, selected, select, report }: {
   </article>;
 }
 
+function AnalysisControls({ receipt, group, refresh, report }: { receipt: Receipt; group: Group; refresh: () => Promise<void>; report: (value: string) => void }) {
+  const [order, setOrder] = useState("inherit"); const [century, setCentury] = useState("inherit");
+  const [busy, setBusy] = useState(false); const [history, setHistory] = useState<AnalysisRun[]>([]);
+  const [oldEvidence, setOldEvidence] = useState<unknown>(null);
+  useEffect(() => {
+    const requested = receipt.analysis?.policy.requested;
+    setOrder(requested?.date_order === null ? "unknown" : requested?.date_order ?? "inherit");
+    setCentury(requested?.century === null ? "unknown" : String(requested?.century ?? "inherit"));
+  }, [receipt.analysis?.id]);
+  async function request(mode: "parse" | "ocr") {
+    setBusy(true);
+    try {
+      await api(`/api/receipts/${receipt.id}/analyze`, { version: group.version, mode,
+        date_order: order === "unknown" ? null : order, century: century === "unknown" ? null : century === "inherit" ? "inherit" : Number(century) });
+      await refresh(); setHistory([]); setOldEvidence(null); report("Analysis queued with this receipt's explicit convention. Review the result before approval.");
+    } catch (error) { report(String(error)); } finally { setBusy(false); }
+  }
+  return <section class="analysis-controls">
+    {group.state === "staging" && <details><summary>Date convention & reprocess</summary>
+      <p class="muted">These choices apply only to this receipt. They do not confirm its timestamp or change other receipts.</p>
+      <fieldset disabled={busy}>
+        <label>Numeric date order<select aria-label="Numeric date order" value={order} onChange={event => setOrder(event.currentTarget.value)}>
+          <option value="inherit">Use application default</option><option value="unknown">No assumption</option>
+          <option value="MDY">Month / day / year</option><option value="DMY">Day / month / year</option><option value="YMD">Year / month / day</option>
+        </select></label>
+        <label>Two-digit year century<select aria-label="Two-digit year century" value={century} onChange={event => setCentury(event.currentTarget.value)}>
+          <option value="inherit">Use application default</option><option value="unknown">No assumption</option>
+          <option value="1900">1900–1999</option><option value="2000">2000–2099</option>
+        </select></label>
+        <div class="row"><button onClick={() => request("parse")}>Apply convention to saved OCR</button>
+          <button class="secondary" onClick={() => request("ocr")}>Run OCR again</button></div>
+      </fieldset>
+    </details>}
+    {receipt.analysis && <p class="muted">Analysis {receipt.analysis.version}: {receipt.analysis.state} · {receipt.analysis.mode} · effective order {receipt.analysis.policy.effective.date_order || "unresolved"}, century {receipt.analysis.policy.effective.century ?? "unresolved"}{receipt.analysis.error ? ` · ${receipt.analysis.error}` : ""}</p>}
+    <details onToggle={async event => {
+      if (!event.currentTarget.open) return;
+      try { const result = await api<{ analyses: AnalysisRun[] }>(`/api/receipts/${receipt.id}/analyses`, undefined, "GET"); setHistory(result.analyses); }
+      catch (error) { report(String(error)); }
+    }}><summary>Analysis history</summary>
+      {history.map(run => <p key={run.id}>Version {run.version}: {run.state} · {run.mode} <button class="secondary" disabled={!run.has_evidence} onClick={async () => {
+        try { setOldEvidence(await api(`/api/receipts/${receipt.id}/evidence?analysis_id=${run.id}`, undefined, "GET")); }
+        catch (error) { report(String(error)); }
+      }}>Inspect analysis {run.version}</button></p>)}
+      {oldEvidence !== null && <pre>{JSON.stringify(oldEvidence, null, 2)}</pre>}
+    </details>
+  </section>;
+}
+
 function GroupCard({ group, selected, select, refresh, report, driveConnected }: {
   group: Group; selected: Set<string>; select: (id: string, value: boolean) => void;
   refresh: () => Promise<void>; report: (value: string) => void; driveConnected: boolean;
 }) {
   const [reservation, setReservation] = useState<Reservation | null>(null);
   const [busy, setBusy] = useState(false);
+  const [dirtyPages, setDirtyPages] = useState(new Set<string>());
+  const flagDirty = useCallback((id: string, dirty: boolean) => setDirtyPages(previous => {
+    if (previous.has(id) === dirty) return previous;
+    const next = new Set(previous); dirty ? next.add(id) : next.delete(id); return next;
+  }), []);
   useEffect(() => setReservation(null), [group.version]);
   async function act(callback: () => Promise<void>) {
     setBusy(true); try { await callback(); await refresh(); } catch (error) { report(String(error)); } finally { setBusy(false); }
@@ -192,18 +262,19 @@ function GroupCard({ group, selected, select, refresh, report, driveConnected }:
   return <section class="group" data-group-id={group.id}>
     <header><div><h2>{group.receipts[0]?.date || "Needs review"} <span class="muted">{group.receipts.length} page{group.receipts.length === 1 ? "" : "s"}</span></h2>
       <p><span class="badge">{group.state}</span> · version {group.version} · {group.manual ? "manual grouping" : "same-minute grouping"}</p></div>
-      {group.state === "staging" && <button disabled={busy} onClick={() => act(async () => {
+      {group.state === "staging" && <button disabled={busy || dirtyPages.size > 0} onClick={() => act(async () => {
         const result = await api<Reservation>(`/api/groups/${group.id}/prepare`, { version: group.version }); setReservation(result);
       })}>Prepare approval</button>}</header>
     <div class="pages">{group.receipts.map((receipt, index) => <div key={receipt.id}>
       {group.state === "staging" && group.receipts.length > 1 && <div class="row"><span>Page {index + 1}</span>
         <button disabled={index === 0 || busy} onClick={() => act(() => move(index, -1))}>Move up</button>
         <button disabled={index === group.receipts.length - 1 || busy} onClick={() => act(() => move(index, 1))}>Move down</button></div>}
-      <ReceiptEditor key={receipt.id} receipt={receipt} group={group} refresh={refresh} selected={selected.has(receipt.id)} select={value => select(receipt.id, value)} report={report} />
+      <ReceiptEditor key={receipt.id} receipt={receipt} group={group} refresh={refresh} selected={selected.has(receipt.id)} select={value => select(receipt.id, value)} report={report} onDirty={flagDirty} />
     </div>)}</div>
+    {dirtyPages.size > 0 && <p class="muted">Save or reload local field edits before approval.</p>}
     {reservation && group.state === "staging" && <div class="approval"><p>Reserved export path: <strong>{reservation.path}</strong></p>
       {reservation.note && <p>{reservation.note}</p>}
-      <p>Approval freezes these fields, page order and reference images.</p><button disabled={busy} onClick={() => act(async () => {
+      <p>Approval freezes these fields, page order and reference images.</p><button disabled={busy || dirtyPages.size > 0} onClick={() => act(async () => {
         await api(`/api/groups/${group.id}/approve`, { export_id: reservation.id, version: reservation.version }); setReservation(null);
         report("Approval queued. Originals remain until all approved artifacts are durable.");
       })}>Approve this version</button></div>}

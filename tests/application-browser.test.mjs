@@ -88,12 +88,21 @@ test("browser queue survives a lost acknowledgment and reload, then review/appro
     await page.getByRole("button", { name: "Prepare approval", exact: true }).click();
     await page.getByRole("button", { name: "Approve this version", exact: true }).waitFor();
     assert.match(await page.locator(".approval").textContent(), /2026\/09-September\/20260914-1721.pdf/);
+    await page.getByLabel("Transaction time", { exact: true }).fill("17:22:30");
+    await page.waitForFunction(() => [...document.querySelectorAll("button")].find(button => button.textContent === "Approve this version")?.disabled === true);
+    assert.equal(await page.getByRole("button", { name: "Prepare approval", exact: true }).isDisabled(), true);
+    const savedEdit = page.waitForResponse(response => response.request().method() === "POST" && /\/api\/receipts\/[a-f0-9-]+$/.test(new URL(response.url()).pathname));
+    await page.getByRole("button", { name: "Save review", exact: true }).click();
+    assert.equal((await savedEdit).status(), 200);
+    await page.getByRole("button", { name: "Prepare approval", exact: true }).click();
+    await page.getByRole("button", { name: "Approve this version", exact: true }).waitFor();
+    assert.match(await page.locator(".approval").textContent(), /2026\/09-September\/20260914-1722.pdf/);
     await page.getByRole("button", { name: "Approve this version", exact: true }).click();
     await page.getByRole("link", { name: "Download approved PDF" }).waitFor({ timeout: 30000 });
     const downloading = page.waitForEvent("download");
     await page.getByRole("link", { name: "Download approved PDF" }).click();
     const download = await downloading;
-    assert.equal(download.suggestedFilename(), "20260914-1721.pdf");
+    assert.equal(download.suggestedFilename(), "20260914-1722.pdf");
     const saved = join(directory, "approved.pdf");
     await download.saveAs(saved);
     assert.equal((await readFile(saved)).subarray(0, 4).toString(), "%PDF");
@@ -181,4 +190,35 @@ test("fallback provenance and both source branches remain visible in staging", {
     await page.getByRole("button", { name: "Inspect source at row 100", exact: true }).last().click();
     await page.waitForFunction(() => document.querySelector(".strip img")?.complete && document.querySelector(".strip img").naturalWidth === 320);
   });
+});
+
+test("a receipt-local convention reparses saved OCR and retains its prior analysis", {
+  timeout: 120000, skip: spawnSync("tesseract", ["--version"]).status !== 0,
+}, async () => {
+  await environment(async ({ page, origin }) => {
+    const png = await page.evaluate(() => {
+      const canvas = document.createElement("canvas"); canvas.width = 640; canvas.height = 1200;
+      const context = canvas.getContext("2d"); context.fillStyle = "white"; context.fillRect(0, 0, 640, 1200);
+      context.fillStyle = "black"; context.font = "32px sans-serif";
+      context.fillText("Transaction", 30, 80); context.fillText("01/09/2022 12:21:41", 30, 150);
+      return canvas.toDataURL("image/png").split(",")[1];
+    });
+    await page.locator('input[type="file"]').setInputFiles({ name: "ambiguous.png", mimeType: "image/png", buffer: Buffer.from(png, "base64") });
+    await page.waitForFunction(() => document.querySelector(".receipt .badge")?.textContent === "ready");
+    assert.equal(await page.getByLabel("Transaction date", { exact: true }).inputValue(), "");
+    await page.getByText("Date convention & reprocess", { exact: true }).click();
+    await page.getByLabel("Numeric date order", { exact: true }).selectOption("DMY");
+    await page.getByLabel("Two-digit year century", { exact: true }).selectOption("unknown");
+    await page.getByRole("button", { name: "Apply convention to saved OCR", exact: true }).click();
+    await page.waitForFunction(() => document.querySelector('input[type="date"]').value === "2022-09-01", null, { timeout: 30000 });
+    const result = await (await fetch(`${origin}/api/state`)).json();
+    const receipt = result.groups[0].receipts[0];
+    assert.equal(receipt.analysis.mode, "parse");
+    assert.equal(receipt.analysis.policy.effective.date_order, "DMY");
+    assert.equal(receipt.timestamp_review, 1);
+    await page.getByText("Analysis history", { exact: true }).click();
+    await page.getByRole("button", { name: "Inspect analysis 1", exact: true }).click();
+    assert.match(await page.locator(".analysis-controls pre").textContent(), /ambiguous_numeric_date/);
+    assert.equal(await page.getByLabel("Transaction date", { exact: true }).inputValue(), "2022-09-01");
+  }, false, true);
 });

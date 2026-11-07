@@ -240,6 +240,8 @@ Type: Feature. Size: M. Depends on: RA-05, RA-10, RA-11.
 
 Progress: `server/recognition.py` and `extraction.py` implement original-coordinate OCR evidence, explicit calendar/time parsers, source association, ambiguity retention and earliest-supported proposals. The worker prefills supported fields and groups incrementally; schema 2 tracks provenance and requires Save review before approval. Tests cover numeric/century ambiguity, French/CJK/era notation, midnight, invalid seconds, distractors and OCR disagreement. Corpus recall and validated unseen accuracy remain open.
 
+Convention progress: receipt-local explicit order/century choices now support cached reparse and fresh recognition with immutable run history. The [policy-assisted scenario](receipt-convention-reanalysis-2026-11-06.md) supplies nine conventions and yields 40 matching proposals on 53 inspected samples. This is not automatic convention inference. Parser v3 flags damaged meridiem suffixes instead of assuming a 24-hour value.
+
 Work:
 - Extract the purchase date from the whole receipt without a user-selected box.
 - Keep raw OCR, text locations where available, competing field candidates, and engine version.
@@ -281,6 +283,8 @@ Acceptance:
 Type: Feature. Size: M. Depends on: RA-08, RA-10. Add RA-12 evidence when available.
 
 Progress: automatic timestamp proposals with mandatory confirmation, full-resolution source inspection, same-minute grouping/vendor-hint veto, manual combine/split/reorder, path preparation and version-bound approval are implemented. Missing fields, unconfirmed proposals, completeness and readability block approval. Approved exports are immutable in this slice; revision, replacement-scan and pinning workflows remain.
+
+Reanalysis progress: schema 3 tracks active receipt runs and immutable policy snapshots. Stale group requests, superseded results and lost leases cannot replace current fields. Manual corrections win during reanalysis; active runs and unsaved local field edits block approval. History inspection, cached parsing, fresh OCR and durable evidence recovery are implemented. Trusted layout-rule creation remains separate work.
 
 Work:
 - Stage all clear and unclear results before Drive; show unclear results first, reasons, and justified confidence. Show the original beside proposed fields and procedure alternatives before approval.
