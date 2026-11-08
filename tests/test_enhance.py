@@ -44,3 +44,11 @@ def test_trim_right_never_splits_the_page():
     assert trim_right(gray).shape[1] == 200
     gray[:, 180:] = 10                  # genuine dark background beyond the paper edge
     assert trim_right(gray).shape[1] == 180
+
+
+def test_trim_right_cuts_wide_dark_background_for_a_narrow_receipt():
+    gray = np.full((300, 1000), 210, dtype=np.uint8)
+    gray[:, :300] = 245
+    gray[:, 300:] = 5                   # dark background beyond 30% of the width
+    gray[:, 995:] = 245                 # thin white fringe at the scan edge
+    assert trim_right(gray).shape[1] == 300

@@ -23,7 +23,7 @@ def runtime(tmp_path):
 
 
 def capture(client, store, identity=None, complete=True, process=True, **metadata):
-    data = bytes([220, 220, 220, 20, 20, 20] * 1600)
+    data = bytes([220, 220, 220] * 19 + [20, 20, 20]) * 160   # light page, dark background column at the right edge
     manifest = {"id": identity or str(uuid.uuid4()), "sha256": hashlib.sha256(data).hexdigest(),
         "byte_length": len(data), "kind": "scanner-raw", "width": 20, "height": 160,
         "dpi_x": 200, "dpi_y": 200, "transport_complete": complete,

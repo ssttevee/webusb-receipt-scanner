@@ -18,13 +18,22 @@ def trim_bottom(gray, fill=(255, 128)):
     return gray[:bottom or gray.shape[0]]
 
 
-def trim_right(gray, threshold=0.3, maximum=0.25):
-    """Cut only a dark suffix of columns at the right edge; never split the page."""
+def trim_right(gray, threshold=0.3, maximum=0.9, gap=8):
+    """Cut the dark background suffix at the right edge. Walks left through the
+    dark band (tolerating short bright runs from frayed paper edges), and never
+    cuts mid-page: a lone dark column with bright background at the edge leaves
+    the width untouched."""
     limit = int(gray.shape[1] * max(0.0, min(1.0, maximum)))
-    right = gray.shape[1]
-    means = gray.mean(axis=0)
-    while right > gray.shape[1] - limit and means[right - 1] < threshold * 255:
-        right -= 1
+    floor = gray.shape[1] - limit
+    dark = gray.mean(axis=0) < threshold * 255
+    right, streak = gray.shape[1], 0
+    for position in range(gray.shape[1] - 1, floor - 1, -1):
+        if dark[position]:
+            right, streak = position, 0
+        else:
+            streak += 1
+            if streak > gap:
+                break
     return gray[:, :right]
 
 
