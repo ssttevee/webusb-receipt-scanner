@@ -638,18 +638,18 @@ function App() {
             <button class="secondary" disabled={quickBusy || !approveGroups.length} onClick={approveAll}>Approve ready groups ({approveGroups.length})</button></div>
           <div class="row"><button class="secondary" onClick={() => setAllExpanded(true)}>Expand all</button>
             <button class="secondary" onClick={() => setAllExpanded(false)}>Collapse all</button></div></div>
-        {attentionGroups.length > 0 && <section class="bucket" data-bucket="attention"><h2>Needs attention ({attentionGroups.length})</h2>
+        {attentionGroups.length > 0 && <section class="bucket" data-bucket="attention"><h2>Needs attention ({attentionGroups.length})</h2><div class="bucket-grid">
           {attentionGroups.map(group => <GroupRow key={group.id} group={group} expanded={isExpanded(group)} onToggle={() => toggleGroup(group)}
             selected={selected} select={(id, value) => setSelected(previous => { const next = new Set(previous); value ? next.add(id) : next.delete(id); return next; })}
-            refresh={refresh} report={setStatus} />)}</section>}
-        {confirmBucket.length > 0 && <section class="bucket" data-bucket="confirm"><h2>Ready to confirm ({confirmBucket.length})</h2>
+            refresh={refresh} report={setStatus} />)}</div></section>}
+        {confirmBucket.length > 0 && <section class="bucket" data-bucket="confirm"><h2>Ready to confirm ({confirmBucket.length})</h2><div class="bucket-grid">
           {confirmBucket.map(group => <GroupRow key={group.id} group={group} expanded={isExpanded(group)} onToggle={() => toggleGroup(group)}
             selected={selected} select={(id, value) => setSelected(previous => { const next = new Set(previous); value ? next.add(id) : next.delete(id); return next; })}
-            refresh={refresh} report={setStatus} />)}</section>}
-        {approveBucket.length > 0 && <section class="bucket" data-bucket="approve"><h2>Ready to approve ({approveBucket.length})</h2>
+            refresh={refresh} report={setStatus} />)}</div></section>}
+        {approveBucket.length > 0 && <section class="bucket" data-bucket="approve"><h2>Ready to approve ({approveBucket.length})</h2><div class="bucket-grid">
           {approveBucket.map(group => <GroupRow key={group.id} group={group} expanded={isExpanded(group)} onToggle={() => toggleGroup(group)}
             selected={selected} select={(id, value) => setSelected(previous => { const next = new Set(previous); value ? next.add(id) : next.delete(id); return next; })}
-            refresh={refresh} report={setStatus} />)}</section>}
+            refresh={refresh} report={setStatus} />)}</div></section>}
         {!reviewGroups.length && <section class="empty"><h2>Your staging area is ready</h2><p>Connect the scanner or import an unprocessed image to begin.</p></section>}
       </div>
       <div class="panel" role="tabpanel" id="panel-exports" aria-labelledby="tab-exports" hidden={tab !== "exports"}>
