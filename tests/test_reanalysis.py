@@ -42,7 +42,7 @@ def test_policy_reparse_uses_saved_lines_and_preserves_immutable_history(cached,
     assert before["processing"]["extraction"]["selected"] is None
     response = request(client, identity)
     assert response.status_code == 202
-    assert response.json()["analysis"]["policy"]["effective"] == {"date_order": "MDY", "century": 2000}
+    assert response.json()["analysis"]["policy"]["effective"] == {"date_order": "MDY", "century": 2000, "expected_month": None}
     monkeypatch.setattr(worker, "recognize", lambda *args, **kwargs: pytest.fail("cached reparse must not rerun OCR"))
     assert run_one(store)
     receipt = state(client)["groups"][0]["receipts"][0]
@@ -68,7 +68,7 @@ def test_policy_is_receipt_local_and_snapshots_application_defaults(cached):
     run_one(store)
     receipt = next(r for group in state(client)["groups"] for r in group["receipts"] if r["id"] == first["id"])
     assert receipt["date"] is None
-    assert receipt["analysis"]["policy"]["effective"] == {"date_order": None, "century": None}
+    assert receipt["analysis"]["policy"]["effective"] == {"date_order": None, "century": None, "expected_month": None}
 
 
 @pytest.mark.parametrize("century,expected", [(2000, "2024-06-01"), (1900, "1924-06-01"), (None, None)])
@@ -86,8 +86,8 @@ def test_scan_century_survives_queue_delay_and_upload_retry(cached, century, exp
     receipt = next(r for g in state(client)["groups"] for r in g["receipts"] if r["id"] == manifest["id"])
     assert receipt["date"] == expected and receipt["timestamp_review"] == 1
     saved = client.get(f"/api/receipts/{manifest['id']}/evidence").json()
-    assert saved["capture"]["timestamp_policy"] == {"century": century}
-    assert saved["processing"]["analysis"]["policy"]["effective"] == {"date_order": "MDY", "century": century}
+    assert saved["capture"]["timestamp_policy"] == {"century": century, "expected_month": None}
+    assert saved["processing"]["analysis"]["policy"]["effective"] == {"date_order": "MDY", "century": century, "expected_month": None}
 
 
 def test_default_scan_century_is_snapshotted_before_processing(cached):
@@ -114,7 +114,8 @@ def test_environment_century_default_and_overrides(monkeypatch, setting, expecte
     assert Settings.environment().year_century == expected
 
 
-@pytest.mark.parametrize("policy", [{"century": 2100}, {"century": "2000"}, {"century": 2000, "extra": True}])
+@pytest.mark.parametrize("policy", [{"century": 2100}, {"century": "2000"}, {"century": 2000, "extra": True},
+    {"century": 2000, "expected_month": "2022-13"}, {"century": 2000, "expected_month": "sep-2022"}])
 def test_capture_rejects_invalid_scan_policy(cached, policy):
     import uuid
     client, _, manifest, _ = cached

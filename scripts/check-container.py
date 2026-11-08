@@ -146,7 +146,8 @@ def main():
                 raise RuntimeError("Reanalysis did not complete")
             evidence = request("GET", f"/api/receipts/{identity}/evidence")
             assert request("GET", f"/api/receipts/{identity}/evidence?analysis_id={old_id}") == old_evidence
-            assert evidence["analysis"]["policy"]["effective"] == {"date_order": args.date_order, "century": args.century}
+            assert evidence["analysis"]["policy"]["effective"] == {"date_order": args.date_order, "century": args.century,
+                                                                   "expected_month": evidence["analysis"]["policy"]["requested"].get("expected_month")}
             assert evidence["processing"]["extraction"]["selected"]["date"] == labels["date"]
             if args.reprocess_mode == "parse":
                 assert evidence["processing"]["ocr"]["reparse"]["fresh_ocr"] is False

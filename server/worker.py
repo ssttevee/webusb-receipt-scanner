@@ -119,12 +119,14 @@ def analyze(store, run_id, ocr_backend=None, fallback=None, job=None):
             ocr_started = time.monotonic()
             with Image.open(receipt["master"]) as image:
                 evidence["ocr"] = recognize(image, dpi=capture["dpi_y"], languages=capture["languages"], output=output / "ocr",
-                                             date_order=policy["effective"]["date_order"], century=policy["effective"]["century"], backend=ocr_backend)
+                                             date_order=policy["effective"]["date_order"], century=policy["effective"]["century"],
+                                             expected_month=policy["effective"].get("expected_month"), backend=ocr_backend)
             if fallback is not None:
                 from .ocr_pipeline import route
                 evidence["ocr"] = route(evidence["ocr"], fallback, receipt["master"], output=output / "ocr" / "fallback",
                                          dpi=capture["dpi_y"], languages=capture["languages"],
-                                         date_order=policy["effective"]["date_order"], century=policy["effective"]["century"])
+                                         date_order=policy["effective"]["date_order"], century=policy["effective"]["century"],
+                                         expected_month=policy["effective"].get("expected_month"))
             evidence["ocr"]["seconds"] = round(time.monotonic() - ocr_started, 6)
         if evidence["ocr"] is not None:
             evidence["extraction"] = evidence["ocr"].pop("extraction")

@@ -62,6 +62,7 @@ def serve(connection, config, parent_pid):
                         raise ValueError("Image exceeds the fallback pixel limit")
                     result = recognize(image, dpi=request["dpi"], languages=request["languages"], output=output,
                                        date_order=request["date_order"], century=request["century"],
+                                       expected_month=request.get("expected_month"),
                                        timeout=remaining, backend=backend)
                 content = encode(result).encode()
                 if len(content) > MAX_RESULT_BYTES:
@@ -120,7 +121,7 @@ class FallbackClient:
         self.descriptor = response["backend"]
         self.linux_limits = response.get("linux_limits", False)
 
-    def request(self, master, *, output, dpi=200, languages=("eng",), date_order=None, century=None):
+    def request(self, master, *, output, dpi=200, languages=("eng",), date_order=None, century=None, expected_month=None):
         started = time.monotonic()
         deadline = started + self.config["timeout"]
         if not self.lock.acquire(blocking=False):
@@ -132,7 +133,7 @@ class FallbackClient:
             identity = uuid.uuid4().hex
             self.connection.send({"kind": "recognize", "id": identity, "master": str(master), "output": str(output),
                                   "deadline": deadline, "dpi": dpi, "languages": list(languages),
-                                  "date_order": date_order, "century": century})
+                                  "date_order": date_order, "century": century, "expected_month": expected_month})
             response = self._receive(deadline)
             if response.get("kind") != "done" or response.get("id") != identity:
                 raise ValueError("Fallback failed or returned a different job")

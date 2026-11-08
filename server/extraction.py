@@ -58,7 +58,10 @@ def nontransaction(text):
     return bool(EXCLUDED.search(text) or EXCLUDED.search(re.sub(r"\s+", "", text)) or HOURS.search(text))
 
 
-def dates(text, order=None, century=None):
+EXPECTED_MONTH = re.compile(r"^(?:2\d{3})-(?:0[1-9]|1[0-2])$")
+
+
+def dates(text, order=None, century=None, expected_month=None):
     """Return every interpretation; a two-digit year needs an explicit century."""
     results, occupied = [], []
     for kind, pattern in DATE_PATTERNS:
@@ -107,12 +110,20 @@ def dates(text, order=None, century=None):
                         values.append(parsed.isoformat())
                 except ValueError:
                     pass
-            values = sorted(set(values))
+            interpretations = sorted(set(values))
+            values = interpretations
+            resolved_by = None
+            if len(values) > 1 and expected_month:
+                matching = [value for value in values if value.startswith(expected_month)]
+                if len(matching) == 1:
+                    values = matching
+                    resolved_by = "expected_month"
             if len(values) > 1:
                 issues.append("ambiguous_numeric_date")
             if not values and not issues:
                 issues.append("invalid_calendar_date")
-            results.append({"values": values, "issues": issues, "span": list(match.span()), "raw": match.group()})
+            results.append({"values": values, "interpretations": interpretations, "resolved_by": resolved_by, "issues": issues,
+                            "span": list(match.span()), "raw": match.group()})
     return results
 
 
@@ -156,13 +167,13 @@ def overlap(first, second):
     return width * height / max(1, area)
 
 
-def extract(lines, *, date_order=None, century=None, require_corroboration=True):
-    if date_order not in (None, "MDY", "DMY", "YMD") or century not in (None, 1900, 2000):
-        raise ValueError("Use explicit MDY/DMY/YMD and 1900/2000 century settings")
+def extract(lines, *, date_order=None, century=None, expected_month=None, require_corroboration=True):
+    if date_order not in (None, "MDY", "DMY", "YMD") or century not in (None, 1900, 2000) or (expected_month is not None and not EXPECTED_MONTH.match(expected_month)):
+        raise ValueError("Use explicit MDY/DMY/YMD, 1900/2000 century and YYYY-MM expected month settings")
     records = []
     for line in lines:
         text = normalized(line.text)
-        found = dates(text, date_order, century)
+        found = dates(text, date_order, century, expected_month)
         records.append({"line": line, "text": text, "dates": found, "times": times(text, [entry["span"] for entry in found])})
     candidates, rejected, issues = [], [], set()
     for record in records:
@@ -195,7 +206,7 @@ def extract(lines, *, date_order=None, century=None, require_corroboration=True)
                 continue
             if not local_dates:
                 # An unpaired clock is evidence, but not a complete timestamp.
-                candidates.append({"dates": [], "time": clock["value"], "precision": clock["precision"],
+                candidates.append({"dates": [], "time": clock["value"], "precision": clock["precision"], "clock": clock["raw"],
                     "issues": [*clock["issues"], "date_time_association_unresolved"],
                     "sources": [{"text": line.text, "box": list(line.box), "ocr_confidence": line.confidence, "pass": line.source}]})
                 continue
@@ -214,7 +225,7 @@ def extract(lines, *, date_order=None, century=None, require_corroboration=True)
                     reasons.append("closing_time_requires_earlier_source_check")
                 if min(source.confidence for source in sources) < 35:
                     reasons.append("weak_ocr_evidence")
-                candidates.append({"dates": calendar["values"], "time": clock["value"], "precision": clock["precision"],
+                candidates.append({"dates": calendar["values"], "time": clock["value"], "precision": clock["precision"], "clock": clock["raw"],
                     "issues": sorted(set(reasons)), "sources": [{"text": source.text, "box": list(source.box),
                         "ocr_confidence": source.confidence, "pass": source.source} for source in sources],
                     "transaction_role": "original" if re.search(r"\boriginal\b|原交易", context, re.I) else
@@ -235,6 +246,19 @@ def extract(lines, *, date_order=None, century=None, require_corroboration=True)
                 candidate["dates"] = corroboration[0]["dates"]
                 candidate["issues"] = []
                 candidate["resolution"] = "same_region_ocr_corroboration"
+        if candidate["issues"] == ["unrecognized_meridiem"] and not candidate["time"]:
+            # A misread meridiem in one pass can borrow the independently parsed
+            # clock from the same printed region, mirroring the date case.
+            # The printed clock digits must agree; only the suffix may differ.
+            corroborating = [other for other in reliable if other["time"] and candidate["dates"] and other["dates"] == candidate["dates"]
+                             and re.sub(r"\D", "", other["clock"]) == re.sub(r"\D", "", candidate["clock"])
+                             and overlap(candidate["box"], other["box"]) >= 0.65]
+            if len({other["time"] for other in corroborating}) == 1:
+                source = min(corroborating, key=lambda other: other["time"])
+                candidate["time"] = source["time"]
+                candidate["precision"] = source["precision"]
+                candidate["issues"] = []
+                candidate["resolution"] = "same_region_clock_corroboration"
         if candidate["issues"] == ["ambiguous_numeric_date"]:
             supported = {other["dates"][0] for other in reliable if other["time"][:5] == candidate["time"][:5] and other["dates"][0] in candidate["dates"]}
             if len(supported) == 1:
@@ -298,4 +322,5 @@ def extract(lines, *, date_order=None, century=None, require_corroboration=True)
         issues.add("missing_complete_timestamp")
     return {"version": VERSION, "status": "proposed" if selected else "needs_review", "selected": selected,
             "review_required": True, "issues": sorted(issues), "candidates": candidates, "rejected": rejected,
-            "policy": {"date_order": date_order, "two_digit_year_century": century, "require_corroboration": require_corroboration}}
+            "policy": {"date_order": date_order, "two_digit_year_century": century, "expected_month": expected_month,
+                       "require_corroboration": require_corroboration}}

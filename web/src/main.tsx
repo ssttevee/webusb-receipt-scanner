@@ -9,14 +9,16 @@ type ScannerCapture = { blob: Blob; dimensions: { width: number; height: number 
   parameters: Frame; resolution: { x: number; y: number }; diagnostics: { transport_complete: boolean }; [key: string]: unknown } };
 type Manifest = { id: string; kind: "scanner-raw" | "image"; sha256: string; byte_length: number;
   width: number; height: number; dpi_x: number; dpi_y: number; transport_complete: boolean;
-  languages: string[]; frame?: Frame; scanner?: Record<string, unknown>; timestamp_policy?: { century: number | null } };
+  languages: string[]; frame?: Frame; scanner?: Record<string, unknown>;
+  timestamp_policy?: { century: number | null; expected_month: string | null } };
 type Pending = { id: string; created: number; blob: Blob; manifest: Manifest };
 type Diagnostic = { id: string; blob: Blob; metadata: unknown };
 type Receipt = { id: string; group_id: string; date: string | null; time: string | null; state: string;
   complete: number; readable: number; vendor: string | null; error: string | null; languages: string[];
   field_source: "manual" | "ocr" | "unresolved" | "confirmed"; timestamp_review: number; analysis?: AnalysisRun | null };
 type AnalysisRun = { id: string; version: number; mode: string; state: string; error: string | null; has_evidence: boolean;
-  policy: { requested: { date_order: string | null; century: string | number | null }; effective: { date_order: string | null; century: number | null }; source: string } };
+  policy: { requested: { date_order: string | null; century: string | number | null; expected_month?: string | null };
+    effective: { date_order: string | null; century: number | null; expected_month?: string | null }; source: string } };
 type Candidate = { id: string; dates: string[]; time: string | null; issues: string[];
   sources: { text: string; box: number[]; ocr_confidence: number; pass: string }[] };
 type Extraction = { version: string; status: string; issues: string[]; selected: { date: string; time: string } | null; candidates: Candidate[];
@@ -248,7 +250,7 @@ function AnalysisControls({ receipt, group, refresh, report }: { receipt: Receip
           <button class="secondary" onClick={() => request("ocr")}>Run OCR again</button></div>
       </fieldset>
     </details>}
-    {receipt.analysis && <p class="muted">Analysis {receipt.analysis.version}: {receipt.analysis.state} · {receipt.analysis.mode} · effective order {receipt.analysis.policy.effective.date_order || "unresolved"}, century {receipt.analysis.policy.effective.century ?? "unresolved"}{receipt.analysis.error ? ` · ${receipt.analysis.error}` : ""}</p>}
+    {receipt.analysis && <p class="muted">Analysis {receipt.analysis.version}: {receipt.analysis.state} · {receipt.analysis.mode} · effective order {receipt.analysis.policy.effective.date_order || "unresolved"}, century {receipt.analysis.policy.effective.century ?? "unresolved"}{receipt.analysis.policy.effective.expected_month ? `, expected month ${receipt.analysis.policy.effective.expected_month}` : ""}{receipt.analysis.error ? ` · ${receipt.analysis.error}` : ""}</p>}
     <details onToggle={async event => {
       if (!event.currentTarget.open) return;
       try { const result = await api<{ analyses: AnalysisRun[] }>(`/api/receipts/${receipt.id}/analyses`, undefined, "GET"); setHistory(result.analyses); }
@@ -333,6 +335,14 @@ function App() {
   const [scanCentury, setScanCentury] = useState(() => {
     try { const saved = localStorage.getItem("receipt-scan-century"); return ["current", "1900", "none"].includes(saved ?? "") ? saved! : "current"; }
     catch { return "current"; }
+  });
+  const lastMonth = (() => { const day = new Date(); day.setDate(1); day.setMonth(day.getMonth() - 1);
+    return `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}`; })();
+  const [expectedMonth, setExpectedMonth] = useState(() => {
+    try { const saved = localStorage.getItem("receipt-expected-month");
+      if (saved === null) return lastMonth;
+      return /^\d{4}-(0[1-9]|1[0-2])$/.test(saved) ? saved : ""; }
+    catch { return lastMonth; }
   });
   const [tab, setTab] = useState<"review" | "exports" | "jobs">(() => {
     try { const saved = localStorage.getItem("receipt-workspace-tab"); return ["review", "exports", "jobs"].includes(saved ?? "") ? saved as "review" | "exports" | "jobs" : "review"; }
@@ -439,7 +449,8 @@ function App() {
     } catch (error) { setStatus(`Image import failed: ${error}`); }
   }
   function scanPolicy() {
-    return { century: scanCentury === "none" ? null : scanCentury === "current" ? Math.floor(new Date().getFullYear() / 100) * 100 : Number(scanCentury) };
+    return { century: scanCentury === "none" ? null : scanCentury === "current" ? Math.floor(new Date().getFullYear() / 100) * 100 : Number(scanCentury),
+      expected_month: /^\d{4}-(0[1-9]|1[0-2])$/.test(expectedMonth) ? expectedMonth : null };
   }
   async function combine() {
     try {
@@ -507,9 +518,15 @@ function App() {
         catch { setStatus("The scan century applies to this tab, but browser storage could not save it for the next visit."); }
       }}><option value="current">Current century ({Math.floor(new Date().getFullYear() / 100) * 100}–{Math.floor(new Date().getFullYear() / 100) * 100 + 99})</option>
         <option value="1900">1900–1999</option><option value="none">No assumption</option></select></label>
+      <label>Expected receipt month<input type="month" aria-label="Expected receipt month" min="2000-01" max="2100-12" value={expectedMonth} disabled={scanning} onChange={event => {
+        const value = event.currentTarget.value; setExpectedMonth(value);
+        try { localStorage.setItem("receipt-expected-month", value); }
+        catch { setStatus("The expected month applies to this tab, but browser storage could not save it for the next visit."); }
+      }} /></label>
       <label class="file-import">Or import an unprocessed PNG (200 DPI)<input type="file" accept="image/png" onChange={event => { const file = event.currentTarget.files?.[0]; if (file) void importImage(file); event.currentTarget.value = ""; }} /></label>
       <div><strong>{pending} browser copies pending</strong><p><button class="secondary" onClick={resume}>Resume transfers</button></p></div></div>
       <p class="muted">The scan century applies to two-digit years on new scans and imports. This browser retains the choice. Printed four-digit years stay unchanged.</p>
+      <p class="muted">The expected month defaults to last month and resolves numeric dates whose orders disagree: the interpretation inside that month wins. Clear it for no assumption.</p>
       <p class="muted">Transport completion does not confirm the physical bottom. Check it during review. OCR proposes supported timestamps; Save review confirms or corrects each proposal before approval.</p>
       {diagnostics.length > 0 && <details><summary>{diagnostics.length} incomplete/fault captures retained in this browser</summary>{diagnostics.map(item => <DiagnosticDownload item={item} key={item.id} />)}</details>}
     </section></aside>

@@ -345,6 +345,27 @@ def test_automatic_proposal_prefills_fields_but_cannot_confirm_itself(runtime, m
     assert prepared(client, group)["path"].endswith("20260914-1721.pdf")
 
 
+def test_scan_expected_month_resolves_ambiguous_numeric_dates(runtime, monkeypatch):
+    from server.extraction import Line, extract
+    import server.worker as worker
+    client, store = runtime
+    store.settings.ocr = True
+    def fixture_recognize(image, **kwargs):
+        lines = [Line("05/09/2022 12:21:41", (0, 10, 500, 30), 95, "discovery"),
+                 Line("05/09/2022 12:21:41", (0, 10, 500, 30), 95, "tile-00")]
+        return {"state": "done", "engine": "fixture", "extraction": extract(lines, date_order=kwargs.get("date_order"),
+            century=kwargs.get("century"), expected_month=kwargs.get("expected_month"))}
+    monkeypatch.setattr(worker, "recognize", fixture_recognize)
+    capture(client, store, timestamp_policy={"century": 2000, "expected_month": "2022-09"})
+    receipt = state(client)["groups"][0]["receipts"][0]
+    assert receipt["date"] == "2022-09-05" and receipt["time"] == "12:21:41" and receipt["field_source"] == "ocr"
+    assert receipt["analysis"]["policy"]["source"] == "scan_settings"
+    assert receipt["analysis"]["policy"]["effective"]["expected_month"] == "2022-09"
+    capture(client, store, timestamp_policy={"century": 2000})
+    unresolved = next(r for g in state(client)["groups"] for r in g["receipts"] if r["id"] != receipt["id"])
+    assert unresolved["date"] is None and unresolved["time"] is None
+
+
 def test_batch_confirmation_accepts_proposals_and_approves_without_manual_review(runtime, monkeypatch):
     from server.extraction import Line, extract
     import server.worker as worker

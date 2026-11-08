@@ -7,10 +7,11 @@ import uuid
 from .storage import digest, durable_write, encode
 
 
-def policy_snapshot(settings, date_order="inherit", century="inherit", source="application"):
-    return {"requested": {"date_order": date_order, "century": century},
+def policy_snapshot(settings, date_order="inherit", century="inherit", source="application", expected_month=None):
+    return {"requested": {"date_order": date_order, "century": century, "expected_month": expected_month},
             "effective": {"date_order": settings.date_order if date_order == "inherit" else date_order,
-                          "century": settings.year_century if century == "inherit" else century},
+                          "century": settings.year_century if century == "inherit" else century,
+                          "expected_month": expected_month},
             "scope": "receipt", "source": source}
 
 
@@ -49,14 +50,16 @@ def ensure_run(store, connection, receipt):
     policy = policy_snapshot(store.settings)
     manifest = json.loads(connection.execute("SELECT manifest FROM captures WHERE id=?", (receipt["id"],)).fetchone()[0])
     if manifest.get("timestamp_policy") is not None:
-        policy = policy_snapshot(store.settings, century=manifest["timestamp_policy"]["century"], source="scan_settings")
+        policy = policy_snapshot(store.settings, century=manifest["timestamp_policy"]["century"],
+                                 expected_month=manifest["timestamp_policy"].get("expected_month"), source="scan_settings")
     mode, state = "ocr", "queued"
     path, checksum = None, None
     if receipt["evidence"] and receipt["state"] == "ready":
         # Preserve pre-history receipts before their first explicit reanalysis.
         evidence = json.loads(receipt["evidence"])
         previous = (evidence.get("extraction") or {}).get("policy", {})
-        policy["effective"] = {"date_order": previous.get("date_order"), "century": previous.get("two_digit_year_century")}
+        policy["effective"] = {"date_order": previous.get("date_order"), "century": previous.get("two_digit_year_century"),
+                               "expected_month": previous.get("expected_month")}
         policy["source"] = "legacy_snapshot"
         evidence["analysis"] = {"id": identity, "version": version, "policy": policy, "mode": "legacy"}
         path = store.settings.work / "captures" / receipt["id"] / "analyses" / identity / "legacy.json"
@@ -88,6 +91,8 @@ def queue_analysis(store, connection, receipt, request):
         connection.execute("UPDATE jobs SET state='done',error='superseded' WHERE kind='analyze' AND target=? AND state='pending'", (previous["id"],))
     identity, version = str(uuid.uuid4()), previous["version"] + 1
     policy = policy_snapshot(store.settings, request.date_order, request.century, "user_receipt_override")
+    carried = (json.loads(previous["policy"]).get("effective") or {}).get("expected_month")
+    policy["requested"]["expected_month"] = policy["effective"]["expected_month"] = carried
     connection.execute("""INSERT INTO analysis_runs(id,receipt_id,version,mode,policy,state,base_id,created)
       VALUES(?,?,?,?,?,'queued',?,?)""", (identity, receipt["id"], version, request.mode, encode(policy), base_id, time.time()))
     connection.execute("""UPDATE receipts SET active_analysis=?,analysis_version=?,

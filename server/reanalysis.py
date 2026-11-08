@@ -7,7 +7,8 @@ from .ocr_pipeline import qualified
 
 
 def parse_branch(lines, failures, policy):
-    result = extract([Line(**line) for line in lines], date_order=policy["date_order"], century=policy["century"])
+    result = extract([Line(**line) for line in lines], date_order=policy["date_order"], century=policy["century"],
+                     expected_month=policy.get("expected_month"))
     if failures:
         result.update(selected=None, status="needs_review")
         result["issues"] = sorted(set(result["issues"]) | {"incomplete_ocr_coverage"})

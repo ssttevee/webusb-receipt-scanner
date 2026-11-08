@@ -22,6 +22,7 @@ class Frame(Model):
 
 class ScanPolicy(Model):
     century: Literal[1900, 2000] | None
+    expected_month: str | None = Field(default=None, pattern=r"^2\d{3}-(?:0[1-9]|1[0-2])$")
 
 
 class Capture(Model):

@@ -56,6 +56,33 @@ def test_numeric_ambiguity_is_not_resolved_by_minimum():
     assert proposal("14/08/2024 12:21")["selected"]["date"] == "2024-08-14"
 
 
+def test_misread_meridiem_borrows_the_clean_clock_from_the_same_region():
+    lines = [Line("10/01/26 7:05:13 PM", (0, 100, 500, 120), 90, "discovery"),
+             Line("10/01/26 7:05:13 PH", (0, 100, 500, 120), 85, "tile-00"),
+             Line("10/01/26 7:05:13 PM", (0, 700, 500, 720), 88, "discovery"),
+             Line("10/01/26 7:05:13 PM", (0, 700, 500, 720), 86, "tile-00")]
+    result = extract_ocr(lines, century=2000, expected_month="2026-10")
+    assert result["status"] == "proposed", result
+    assert (result["selected"]["date"], result["selected"]["time"]) == ("2026-10-01", "19:05:13")
+    assert "unrecognized_meridiem" not in result["issues"]
+    mismatched = extract_ocr([Line("10/01/26 7:05:13 PM", (0, 100, 500, 120), 90, "discovery"),
+                              Line("10/01/26 8:15:44 PH", (0, 100, 500, 120), 85, "tile-00")], century=2000, expected_month="2026-10")
+    assert mismatched["selected"] is None and "unrecognized_meridiem" in mismatched["issues"]
+
+
+def test_expected_month_resolves_the_agreeing_numeric_order():
+    assert proposal("01/09/2022 12:21:41", expected_month="2022-09")["selected"]["date"] == "2022-09-01"
+    assert proposal("01/09/2022 12:21:41", expected_month="2022-01")["selected"]["date"] == "2022-01-09"
+    unresolved = proposal("01/09/2022 12:21:41", expected_month="2022-05")
+    assert unresolved["selected"] is None and "ambiguous_numeric_date" in unresolved["issues"]
+    resolved = proposal("01/09/2022 12:21:41", expected_month="2022-09")
+    assert resolved["selected"]["date"] == "2022-09-01"
+    assert resolved["policy"]["expected_month"] == "2022-09"
+    assert proposal("08/14/26 12:21", century=2000, expected_month="2026-08")["selected"]["date"] == "2026-08-14"
+    with pytest.raises(ValueError):
+        extract([], expected_month="2022-13")
+
+
 def test_two_digit_year_requires_explicit_policy():
     assert "two_digit_year_requires_century" in proposal("08/14/24 14:22")["issues"]
     assert proposal("08/14/24 14:22")["selected"] is None

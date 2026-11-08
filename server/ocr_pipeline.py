@@ -40,13 +40,13 @@ def qualified(extraction, branch):
     return result
 
 
-def route(primary, client, master, *, output, dpi=200, languages=("eng",), date_order=None, century=None):
+def route(primary, client, master, *, output, dpi=200, languages=("eng",), date_order=None, century=None, expected_month=None):
     result = deepcopy(primary)
     reason = fallback_reason(primary["extraction"])
     if reason:
         result["fallback"] = {"version": VERSION, "state": "skipped", "reason": reason, "seconds": 0}
         return result
-    response = client.request(master, output=output, dpi=dpi, languages=languages, date_order=date_order, century=century)
+    response = client.request(master, output=output, dpi=dpi, languages=languages, date_order=date_order, century=century, expected_month=expected_month)
     secondary = response.pop("result")
     result["version"] = VERSION
     result["fallback"] = {"version": VERSION, **response,

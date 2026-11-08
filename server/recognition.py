@@ -69,7 +69,7 @@ def receipt_region(image):
     return (0, 0, image.width, end)
 
 
-def recognize(image, *, dpi=200, languages=("eng",), output=None, date_order=None, century=None, timeout=120, backend=None):
+def recognize(image, *, dpi=200, languages=("eng",), output=None, date_order=None, century=None, expected_month=None, timeout=120, backend=None):
     started = time.monotonic()
     left, top, right, bottom = receipt_region(image)
     region = image.crop((left, top, right, bottom)).convert("L")
@@ -119,7 +119,7 @@ def recognize(image, *, dpi=200, languages=("eng",), output=None, date_order=Non
                            "box": [x, y, x + pixels.width, y + pixels.height], "line_count": len(lines)})
         except (subprocess.TimeoutExpired, FileNotFoundError, TimeoutError, RuntimeError, ValueError):
             failures.append("ocr_pass_unavailable_or_timed_out")
-    extraction = extract(all_lines, date_order=date_order, century=century)
+    extraction = extract(all_lines, date_order=date_order, century=century, expected_month=expected_month)
     if failures:
         extraction["issues"] = sorted(set(extraction["issues"]) | {"incomplete_ocr_coverage"})
         extraction["selected"] = None

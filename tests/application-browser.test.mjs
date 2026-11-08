@@ -199,6 +199,29 @@ test("quick path confirms stored proposals and approves a batch without per-page
   }, false, true);
 });
 
+test("the sidebar expected month defaults to last month and resolves an ambiguous numeric date", {
+  timeout: 120000, skip: spawnSync("tesseract", ["--version"]).status !== 0,
+}, async () => {
+  await environment(async ({ page }) => {
+    const control = page.getByLabel("Expected receipt month", { exact: true });
+    const expected = new Date(); expected.setDate(1); expected.setMonth(expected.getMonth() - 1);
+    assert.equal(await control.inputValue(), `${expected.getFullYear()}-${String(expected.getMonth() + 1).padStart(2, "0")}`);
+    await control.fill("2022-09");
+    const png = await page.evaluate(() => {
+      const canvas = document.createElement("canvas"); canvas.width = 640; canvas.height = 1200;
+      const context = canvas.getContext("2d"); context.fillStyle = "white"; context.fillRect(0, 0, 640, 1200);
+      context.fillStyle = "black"; context.font = "32px sans-serif";
+      context.fillText("Transaction", 30, 80); context.fillText("05/09/2022 12:21:41", 30, 150); context.fillText("BOTTOM", 30, 1150);
+      return canvas.toDataURL("image/png").split(",")[1];
+    });
+    await page.locator('input[type="file"]').setInputFiles({ name: "expected-month.png", mimeType: "image/png", buffer: Buffer.from(png, "base64") });
+    await page.waitForFunction(() => document.querySelector(".proposal strong")?.textContent.includes("OCR timestamp proposal"), null, { timeout: 30000 });
+    assert.equal(await page.getByLabel("Transaction date", { exact: true }).inputValue(), "2022-09-05");
+    await page.reload();
+    assert.equal(await control.inputValue(), "2022-09");
+  }, false, true);
+});
+
 test("fallback provenance and both source branches remain visible in staging", { timeout: 120000 }, async () => {
   await environment(async ({ page }) => {
     await page.route("**/api/receipts/*/evidence", async route => {
