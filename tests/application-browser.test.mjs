@@ -12,7 +12,7 @@ import { installEpsonFixture } from "./epson-usb-fixture.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
-// Group rows stay one line tall; page fields, proposals and approvals only exist inside the row's modal editor.
+// Ledger cells stay one fixed line tall; page fields, proposals and approvals only exist inside the cell's modal editor.
 const openEditor = (page, timeout = 30000) => page.getByRole("button", { name: /^Edit group/ }).first().click({ timeout });
 const closeEditor = page => page.getByRole("button", { name: "Close", exact: true }).click();
 
@@ -339,5 +339,142 @@ test("scan century defaults to this century and persists for later imports", {
     assert.equal(third.analysis.policy.effective.century, null);
     const state = await (await fetch(`${origin}/api/state`)).json();
     assert.equal(state.groups.flatMap(group => group.receipts).find(receipt => receipt.id === first.id).date, first.date);
+  }, false, true);
+});
+
+test("the ledger ladder attests, confirms and approves a group from its cell without opening the editor", {
+  timeout: 120000, skip: spawnSync("tesseract", ["--version"]).status !== 0,
+}, async () => {
+  await environment(async ({ page, origin }) => {
+    const png = await page.evaluate(() => {
+      const canvas = document.createElement("canvas"); canvas.width = 640; canvas.height = 1200;
+      const context = canvas.getContext("2d"); context.fillStyle = "white"; context.fillRect(0, 0, 640, 1200);
+      context.fillStyle = "black"; context.font = "32px sans-serif";
+      context.fillText("Transaction", 30, 80); context.fillText("2026-09-14 17:21:30", 30, 150); context.fillText("BOTTOM", 30, 1150);
+      return canvas.toDataURL("image/png").split(",")[1];
+    });
+    await page.locator('input[type="file"]').setInputFiles({ name: "ladder.png", mimeType: "image/png", buffer: Buffer.from(png, "base64") });
+    for (let attempt = 0; attempt < 150; attempt++) {
+      const intake = await (await page.request.get(`${origin}/api/state`)).json();
+      const [receipt] = intake.groups[0]?.receipts ?? [];
+      if (receipt?.state === "ready" && receipt.date === "2026-09-14" && !["queued", "running"].includes(receipt.analysis?.state ?? "ready")) break;
+      await sleep(200);
+    }
+    await page.reload();
+    await page.waitForFunction(() => Boolean(document.querySelector(".cell .act.attest")), null, { timeout: 30000 });
+    // The cell shows short fix tokens, but its tooltip carries the full verb-first instruction —
+    // and only the instructions that are actionable now (confirm date is suppressed until the
+    // hard attestations are done, so a cell never advertises a fix that would be refused).
+    assert.equal(await page.locator(".cell").getAttribute("data-severity"), "blocked");
+    assert.match(await page.locator(".cell").getAttribute("title"), /attest bottom · attest legible$/);
+    await page.locator(".cell .act.attest").click();
+    await page.waitForFunction(() => document.querySelector('[role="status"]').textContent.includes("Attested bottom"), null, { timeout: 15000 });
+    const attested = await (await page.request.get(`${origin}/api/state`)).json();
+    const [attestedPage] = attested.groups[0].receipts;
+    assert.equal(attestedPage.complete, 1); assert.equal(attestedPage.readable, 1);
+    assert.equal(attestedPage.field_source, "ocr", "attestation must never rewrite the proposal state");
+    assert.equal(attestedPage.timestamp_review, 1, "attestation must leave the review requirement intact");
+    await page.waitForFunction(() => Boolean(document.querySelector(".cell[data-severity=pending] .act.confirm")), null, { timeout: 15000 });
+    assert.match(await page.locator(".cell").getAttribute("title"), /confirm date$/, "the cell now names its one remaining fix");
+    // One job, one name: the row button and the toolbar button are the same verb at two scopes.
+    assert.match(await page.getByRole("button", { name: /^Confirm ready pages/ }).textContent(), /\(1\)/);
+    await page.locator(".cell .act.confirm").click();
+    await page.waitForFunction(() => document.querySelector('[role="status"]').textContent.includes("Confirmed 2026-09-14"), null, { timeout: 15000 });
+    const confirmed = await (await page.request.get(`${origin}/api/state`)).json();
+    assert.equal(confirmed.groups[0].receipts[0].field_source, "confirmed");
+    assert.equal(confirmed.groups[0].receipts[0].timestamp_review, 0);
+    assert.equal(confirmed.groups[0].receipts[0].complete, 1);
+    assert.equal(confirmed.groups[0].receipts[0].readable, 1);
+    await page.waitForFunction(() => Boolean(document.querySelector(".cell[data-severity=clear] .act.approve")), null, { timeout: 15000 });
+    await page.locator(".cell .act.approve").click();
+    await page.waitForFunction(() => !document.querySelector(".cell"), null, { timeout: 30000 });
+    await page.getByRole("tab", { name: /^Exports/ }).click();
+    await page.getByRole("link", { name: "Download approved PDF" }).waitFor({ timeout: 30000 });
+    const done = await (await page.request.get(`${origin}/api/state`)).json();
+    assert.match(done.groups[0].exports[0].path, /2026\/09-September\/20260914-1721\.pdf/);
+  }, false, true);
+});
+
+test("the keyboard cursor steps the ledger and X opens the focused group with its date field active", {
+  timeout: 120000, skip: spawnSync("tesseract", ["--version"]).status !== 0,
+}, async () => {
+  await environment(async ({ page, origin }) => {
+    for (const lines of [
+      ["Transaction", "2026-09-14 17:21:30", "BOTTOM"],
+      ["Self service", "THANK YOU"],
+    ]) {
+      const png = await page.evaluate(text => {
+        const canvas = document.createElement("canvas"); canvas.width = 640; canvas.height = 1200;
+        const context = canvas.getContext("2d"); context.fillStyle = "white"; context.fillRect(0, 0, 640, 1200);
+        context.fillStyle = "black"; context.font = "32px sans-serif";
+        text.forEach((line, index) => context.fillText(line, 30, 80 + index * 70));
+        return canvas.toDataURL("image/png").split(",")[1];
+      }, lines);
+      await page.locator('input[type="file"]').setInputFiles({ name: `stepping-${lines.length}.png`, mimeType: "image/png", buffer: Buffer.from(png, "base64") });
+    }
+    let groups;
+    for (let attempt = 0; attempt < 200; attempt++) {
+      groups = (await (await page.request.get(`${origin}/api/state`)).json()).groups;
+      const receipts = groups.flatMap(group => group.receipts);
+      const dated = receipts.filter(receipt => receipt.date).flatMap(receipt => receipt.analysis?.state ?? "ready");
+      if (groups.length === 2 && receipts.length === 2 && receipts.every(receipt => receipt.state === "ready")
+        && receipts.some(receipt => receipt.date) && !dated.some(state => ["queued", "running"].includes(state))) break;
+      await sleep(200);
+    }
+    assert.equal(groups.length, 2, "one dated and one undated group");
+    const blank = groups.find(group => !group.receipts.some(receipt => receipt.date));
+    const dated = groups.find(group => blank.id !== group.id);
+    await page.reload();
+    await page.waitForFunction(() => document.querySelectorAll(".cell").length === 2, null, { timeout: 30000 });
+    await page.evaluate(() => document.activeElement?.blur());
+    await page.keyboard.press("j");
+    // Undated groups lead the queue: they need the most judgment.
+    const stepped = await page.evaluate(() => [...document.querySelectorAll(".cell")].map(cell => `${cell.dataset.groupId.slice(0, 8)} "${cell.querySelector(".ident")?.textContent.trim()}"`));
+    assert.equal(await page.evaluate(() => document.querySelector(".cell[data-focused]")?.dataset.groupId), blank.id, `ledger order was [${stepped}]`);
+    await page.keyboard.press("x");
+    await page.waitForFunction(() => Boolean(document.querySelector("dialog.editor[open]")), null, { timeout: 15000 });
+    assert.equal(await page.evaluate(() => document.querySelector("dialog.editor")?.getAttribute("aria-label")), `Review group #${blank.id.slice(0, 8)}`);
+    assert.equal(await page.evaluate(() => document.activeElement === document.querySelector("dialog.editor .field-grid input[type=\"date\"]")), true,
+      "X must land the caret in the date field of the focused group, not any other group");
+    await page.keyboard.press("Escape");
+    // Wait for the dialog to unmount, not just lose [open]: the native close event removes
+    // [open] a frame before the app's editingId state flush, and the key handler guards on it.
+    await page.waitForFunction(() => !document.querySelector("dialog.editor"), null, { timeout: 5000 });
+    await page.evaluate(() => document.activeElement?.blur());
+    await page.keyboard.press("j");
+    assert.equal(await page.evaluate(() => document.querySelector(".cell[data-focused]")?.dataset.groupId), dated.id,
+      "the cursor must survive opening and closing an editor, then keep stepping");
+  }, false, true);
+});
+
+test("ledger cells keep one fixed line and no fix token truncates at laptop or desktop widths", {
+  timeout: 120000, skip: spawnSync("tesseract", ["--version"]).status !== 0,
+}, async () => {
+  await environment(async ({ page }) => {
+    for (let index = 0; index < 4; index++) {
+      const png = await page.evaluate(minute => {
+        const canvas = document.createElement("canvas"); canvas.width = 640; canvas.height = 1200;
+        const context = canvas.getContext("2d"); context.fillStyle = "white"; context.fillRect(0, 0, 640, 1200);
+        context.fillStyle = "black"; context.font = "32px sans-serif";
+        context.fillText("Transaction", 30, 80); context.fillText(`2026-09-14 17:${minute}:30`, 30, 150); context.fillText("BOTTOM", 30, 1150);
+        return canvas.toDataURL("image/png").split(",")[1];
+      }, 21 + index); // distinct minutes keep four separate groups
+      await page.locator('input[type="file"]').setInputFiles({ name: `dense-${index}.png`, mimeType: "image/png", buffer: Buffer.from(png, "base64") });
+    }
+    await page.waitForFunction(() => [...document.querySelectorAll(".cell .ident")].filter(ident => ident.textContent.includes("2026-09-14")).length === 4,
+      null, { timeout: 90000 });
+    for (const width of [1280, 1440]) {
+      await page.setViewportSize({ width, height: 900 });
+      await page.waitForTimeout(400);
+      const fit = await page.evaluate(() => {
+        const cells = [...document.querySelectorAll(".cell")];
+        return { cells: cells.length,
+          heights: new Set(cells.map(cell => Math.round(cell.getBoundingClientRect().height))).size,
+          clipped: cells.flatMap(cell => [...cell.querySelectorAll(".fixes .pill")].filter(pill => pill.scrollWidth > pill.clientWidth + 1).map(pill => pill.textContent)),
+          tracks: getComputedStyle(document.querySelector(".ledger")).gridTemplateColumns.split(" ").length };
+      });
+      assert.deepEqual([fit.cells, fit.heights, fit.clipped], [4, 1, []], `at ${width}px`);
+      assert.equal(fit.tracks, width === 1280 ? 2 : 3, `at ${width}px`);
+    }
   }, false, true);
 });

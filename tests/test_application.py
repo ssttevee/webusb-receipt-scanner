@@ -406,6 +406,33 @@ def test_batch_confirmation_accepts_proposals_and_approves_without_manual_review
     assert stale.status_code == 409
 
 
+def test_attest_moves_only_the_two_operator_flags_and_never_regroups(runtime):
+    client, store = runtime
+    capture(client, store)
+    group = state(client)["groups"][0]
+    page = group["receipts"][0]
+    assert not page["complete"] and not page["readable"]
+    assert client.post(f"/api/receipts/{page['id']}/attest",
+        json={"version": group["version"] + 1, "complete": True, "readable": True}).status_code == 409
+    assert client.post(f"/api/receipts/{page['id']}/attest",
+        json={"version": group["version"], "complete": True, "readable": True}).status_code == 200
+    after = state(client)["groups"]
+    assert len(after) == 1 and after[0]["id"] == group["id"]
+    attested = after[0]["receipts"][0]
+    assert attested["complete"] and attested["readable"] and after[0]["version"] == group["version"] + 1
+    for field in ("date", "time", "vendor", "field_source", "timestamp_review", "state", "error", "group_id"):
+        assert attested[field] == page[field], field
+    assert client.post(f"/api/receipts/{page['id']}/attest",
+        json={"version": after[0]["version"], "complete": False, "readable": True}).status_code == 200
+    cleared = state(client)["groups"][0]["receipts"][0]
+    assert not cleared["complete"] and cleared["readable"]
+    waiting = capture(client, store, process=False)
+    waiting_group = next(g for g in state(client)["groups"] if any(r["id"] == waiting[0]["id"] for r in g["receipts"]))
+    assert next(r for r in waiting_group["receipts"] if r["id"] == waiting[0]["id"])["state"] != "ready"
+    assert client.post(f"/api/receipts/{waiting[0]['id']}/attest",
+        json={"version": waiting_group["version"], "complete": True, "readable": True}).status_code == 409
+
+
 def test_ambiguous_extraction_keeps_manual_fields_empty(runtime, monkeypatch):
     from server.extraction import Line, extract
     import server.worker as worker

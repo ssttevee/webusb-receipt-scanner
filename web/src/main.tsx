@@ -30,18 +30,25 @@ type Job = { id: string; kind: string; target: string; state: string; attempts: 
 type State = { groups: Group[]; jobs: Job[]; drive: { configured: boolean; connected: boolean } };
 type Reservation = { id: string; path: string; version: number; note?: string | null };
 
-type Reason = { code: string; label: string; hard: boolean };
+type Reason = { code: string; label: string; short: string; hard: boolean };
+
+// Every label names the operator's next move, not the symptom, and FIX_RANK orders them by how
+// much judgment the fix needs: an unresolved date outranks a checkbox, so the primary fix shown
+// in a ledger cell is always the most expensive thing standing between the group and approval.
+// `short` is the same instruction at ledger width; the row's action button supplies the verb and
+// its tooltip plus the status line give the full sentence.
+const FIX_RANK: Record<string, number> = { error: 0, processing: 1, timestamp: 2, "analysis-failed": 3, incomplete: 4, unreadable: 5, analyzing: 6, proposal: 7 };
 
 function receiptIssues(receipt: Receipt): Reason[] {
   const issues: Reason[] = [];
-  if (receipt.error) issues.push({ code: "error", label: receipt.error.slice(0, 48), hard: true });
-  if (receipt.state !== "ready") issues.push({ code: "processing", label: receipt.state.replaceAll("_", " "), hard: true });
-  if (!receipt.date || !receipt.time) issues.push({ code: "timestamp", label: receipt.date ? "needs time" : "needs date/time", hard: true });
-  if (!receipt.complete) issues.push({ code: "incomplete", label: "bottom cut off", hard: true });
-  if (!receipt.readable) issues.push({ code: "unreadable", label: "unreadable", hard: true });
-  if (receipt.analysis?.state === "failed") issues.push({ code: "analysis-failed", label: "analysis failed", hard: true });
-  if (["queued", "running"].includes(receipt.analysis?.state ?? "")) issues.push({ code: "analyzing", label: "OCR analyzing", hard: false });
-  if (receipt.timestamp_review && !issues.some(issue => issue.hard)) issues.push({ code: "proposal", label: "confirm proposal", hard: false });
+  if (receipt.error) issues.push({ code: "error", label: "scan error", short: "error", hard: true });
+  if (receipt.state !== "ready") issues.push({ code: "processing", label: "scan pending", short: "scanning", hard: true });
+  if (!receipt.date || !receipt.time) issues.push({ code: "timestamp", label: receipt.date ? "set time" : "set date", short: receipt.date ? "time" : "date", hard: true });
+  if (receipt.analysis?.state === "failed") issues.push({ code: "analysis-failed", label: "retry analysis", short: "retry", hard: true });
+  if (!receipt.complete) issues.push({ code: "incomplete", label: "attest bottom", short: "bottom", hard: true });
+  if (!receipt.readable) issues.push({ code: "unreadable", label: "attest legible", short: "legible", hard: true });
+  if (["queued", "running"].includes(receipt.analysis?.state ?? "")) issues.push({ code: "analyzing", label: "OCR running", short: "OCR", hard: false });
+  if (receipt.timestamp_review && !issues.some(issue => issue.hard)) issues.push({ code: "proposal", label: "confirm date", short: "confirm", hard: false });
   return issues;
 }
 
@@ -52,13 +59,24 @@ function groupSeverity(group: Group): "blocked" | "pending" | "clear" {
   return issues.length ? "pending" : "clear";
 }
 
-function groupIssues(group: Group): { label: string; count: number; hard: boolean }[] {
-  const counts = new Map<string, { count: number; hard: boolean }>();
+// Glyph plus tint plus border: severity must survive greyscale and colour-blind viewing.
+const SEVERITY_GLYPH = { blocked: "▲", pending: "●", clear: "✓" };
+
+function groupIssues(group: Group): { code: string; label: string; short: string; count: number; hard: boolean }[] {
+  const counts = new Map<string, { label: string; short: string; count: number; hard: boolean }>();
   for (const receipt of group.receipts) for (const issue of receiptIssues(receipt)) {
-    const current = counts.get(issue.label);
-    counts.set(issue.label, current ? { count: current.count + 1, hard: current.hard || issue.hard } : { count: 1, hard: issue.hard });
+    const current = counts.get(issue.code);
+    counts.set(issue.code, current ? { ...current, count: current.count + 1, hard: current.hard || issue.hard }
+      : { label: issue.label, short: issue.short, count: 1, hard: issue.hard });
   }
-  return [...counts].map(([label, meta]) => ({ label, ...meta })).sort((a, b) => Number(b.hard) - Number(a.hard));
+  return [...counts].map(([code, meta]) => ({ code, ...meta }))
+    .sort((a, b) => (FIX_RANK[a.code] ?? 9) - (FIX_RANK[b.code] ?? 9) || b.count - a.count);
+}
+
+// A group is named by its own data, never by its status: the tab already says "review".
+function groupTitle(group: Group) {
+  const dates = group.receipts.map(receipt => receipt.date).filter(Boolean).sort();
+  return dates[0] || `#${group.id.slice(0, 8)}`;
 }
 
 const database = new Dexie("receipt-transfer-queue") as Dexie & { pending: Table<Pending>; diagnostics: Table<Diagnostic> };
@@ -308,30 +326,61 @@ function isInstantlyApprovable(group: Group) {
     && !["queued", "running"].includes(receipt.analysis?.state ?? "ready"));
 }
 
-// One dense row per group. Fields and approval live in the shared editor dialog, which the
-// app keeps mounted so a group moving between buckets mid-edit cannot discard local edits.
-function GroupRow({ group, edit, approve, busy }: {
-  group: Group; edit: () => void; approve: () => Promise<void>; busy: boolean;
+// A row's single inline action, derived from the top-ranked issue so the button always names the
+// most expensive thing standing between this group and approval. Null means the fix needs judgment,
+// so the cell offers no button: opening the editor is the honest answer.
+type Fix = { kind: "confirm" | "attest" | "approve" | "retry"; hint: string; count: number } | null;
+
+function failedApproveJob(group: Group, jobs: Job[]) {
+  const exports = new Set(group.exports.map(item => item.id));
+  return jobs.find(job => job.state === "failed" && job.kind === "approve" && exports.has(job.target)) ?? null;
+}
+
+function primaryFix(group: Group, jobs: Job[], confirmIds: Set<string>, approveIds: Set<string>): Fix {
+  if (group.state === "approval_failed") {
+    const job = failedApproveJob(group, jobs);
+    return job ? { kind: "retry", hint: `Retry the failed approval for ${groupTitle(group)}`, count: 1 } : null;
+  }
+  const reviewing = group.receipts.filter(receipt => receipt.timestamp_review === 1).length;
+  const unattested = group.receipts.filter(receipt => !receipt.complete || !receipt.readable).length;
+  switch (groupIssues(group)[0]?.code) {
+    case undefined:
+      return approveIds.has(group.id) ? { kind: "approve", hint: `Approve ${groupTitle(group)}`, count: 1 } : null;
+    case "proposal":
+      return confirmIds.has(group.id) ? { kind: "confirm", hint: `Confirm ${reviewing} stored proposal${reviewing === 1 ? "" : "s"} in ${groupTitle(group)}`, count: reviewing } : null;
+    case "incomplete":
+    case "unreadable":
+      return { kind: "attest", hint: `Attest bottom and legibility for ${unattested} page${unattested === 1 ? "" : "s"} in ${groupTitle(group)}`, count: unattested };
+    default:
+      return null;
+  }
+}
+
+// One ledger cell: fixed height, never wraps, and carries the one action that needs no dialog.
+function LedgerCell({ group, index, fix, focused, busy, edit, act }: {
+  group: Group; index: number; fix: Fix; focused: boolean; busy: boolean; edit: () => void; act: () => Promise<void>;
 }) {
-  const issues = groupIssues(group);
-  const title = group.receipts[0]?.date || group.id.slice(0, 8);
-  return <section class="group dense" data-group-id={group.id} data-severity={groupSeverity(group)}>
-    <header><div class="group-title" onClick={edit}>
-      <button class="expand" aria-haspopup="dialog" aria-label={`Edit group ${title}`} onClick={edit} />
-      <span class="thumbs">{group.receipts.slice(0, 3).map(receipt => <img key={receipt.id} src={`/api/receipts/${receipt.id}/image`} alt="" loading="lazy" />)}
-        {group.receipts.length > 3 && <span class="thumb-more">+{group.receipts.length - 3}</span>}</span>
-      <h2 title={`version ${group.version} · ${group.manual ? "manual grouping" : "same-minute grouping"}`}>
-        {group.receipts[0]?.date || "Needs review"} <span class="muted">{group.receipts.length}p</span></h2>
-      {group.state === "approval_failed" && <span class="pill bad">approval failed</span>}
-      {issues.slice(0, 3).map(issue => <span class={`pill ${issue.hard ? "bad" : "warn"}`} key={issue.label}>{issue.label}{issue.count > 1 ? ` ×${issue.count}` : ""}</span>)}
-      {issues.length > 3 && <span class="pill">+{issues.length - 3} more</span>}
-    </div>{isInstantlyApprovable(group) && <button disabled={busy} onClick={approve}>Approve</button>}</header>
+  const title = groupTitle(group);
+  const chips = (group.state === "approval_failed" ? [{ code: "approval-failed", label: "approval failed", short: "failed", count: 1, hard: true }] : [])
+    .concat(groupIssues(group));
+  const working = chips.length > 0 && chips.every(chip => chip.code === "analyzing");
+  return <section class="cell" data-group-id={group.id} data-ledger-index={index} data-severity={groupSeverity(group)}
+    data-focused={focused || undefined} title={`${title} · version ${group.version} · ${group.manual ? "manual grouping" : "same-minute grouping"} · ${
+      chips.map(chip => `${chip.label}${chip.count > 1 ? ` ×${chip.count}` : ""}`).join(" · ") || "no open issues"}`}>
+    <span class={`glyph${working ? " working" : ""}`} aria-hidden="true">{SEVERITY_GLYPH[groupSeverity(group)]}</span>
+    <button class="ident" aria-haspopup="dialog" aria-label={`Edit group ${title}`} onClick={edit}>
+      {title} <em>{group.receipts.length}p</em></button>
+    <span class="fixes">{chips.slice(0, 2).map(chip => <span class={`pill ${chip.hard ? "bad" : "warn"}`} key={chip.code}>
+      {chip.short}{chip.count > 1 ? ` ×${chip.count}` : ""}</span>)}
+      {chips.length > 2 && <span class="pill more">+{chips.length - 2}</span>}</span>
+    {fix && <button class={`act ${fix.kind}`} disabled={busy} onClick={act} aria-label={fix.hint} title={fix.hint}>
+      ⏎{fix.count > 1 ? fix.count : ""}</button>}
   </section>;
 }
 
-function GroupEditor({ group, selected, select, refresh, report, close }: {
+function GroupEditor({ group, selected, select, refresh, report, close, focusDate }: {
   group: Group; selected: Set<string>; select: (id: string, value: boolean) => void;
-  refresh: () => Promise<void>; report: (value: string) => void; close: () => void;
+  refresh: () => Promise<void>; report: (value: string) => void; close: () => void; focusDate: boolean;
 }) {
   const [reservation, setReservation] = useState<Reservation | null>(null);
   const [busy, setBusy] = useState(false);
@@ -345,6 +394,7 @@ function GroupEditor({ group, selected, select, refresh, report, close }: {
     const dialog = dialogRef.current;
     if (!dialog) return;
     dialog.showModal();
+    if (focusDate) dialog.querySelector<HTMLElement>(".field-grid input[type=\"date\"]")?.focus();
     return () => { if (dialog.open) dialog.close(); };
   }, []);
   useEffect(() => setReservation(null), [group.version]);
@@ -370,12 +420,12 @@ function GroupEditor({ group, selected, select, refresh, report, close }: {
       const result = await api<Reservation>(`/api/groups/${group.id}/prepare`, { version: group.version }); setReservation(result);
     });
   }
-  const title = group.receipts[0]?.date || group.id.slice(0, 8);
+  const title = groupTitle(group);
   return <dialog class="editor" ref={dialogRef} aria-label={`Review group ${title}`} onClose={close}
     onClick={event => { if (event.target === event.currentTarget) dialogRef.current?.close(); }}>
-    <header class="editor-head"><div><h2>{group.receipts[0]?.date || "Needs review"} <span class="muted">{group.receipts.length} page{group.receipts.length === 1 ? "" : "s"}</span></h2>
+    <header class="editor-head"><div><h2>{title} <span class="muted">{group.receipts.length} page{group.receipts.length === 1 ? "" : "s"}</span></h2>
       <p><span class="badge">{group.state.replaceAll("_", " ")}</span> · version {group.version} · {group.manual ? "manual grouping" : "same-minute grouping"}</p>
-      {group.state === "approval_failed" && <p class="muted">Approval failed. Open the Jobs tab and retry its approve job.</p>}</div>
+      {group.state === "approval_failed" && <p class="muted">Approval failed. Retry its approve job from the row's action, or from the Jobs tab.</p>}</div>
       <div class="row">{instantlyApprovable && <button disabled={busy || dirtyPages.size > 0} onClick={approveNow}>Approve</button>}
         {group.state === "staging" && !instantlyApprovable && <button disabled={busy || dirtyPages.size > 0} onClick={prepareReservation}>Prepare approval</button>}
         <button class="secondary" onClick={() => dialogRef.current?.close()}>Close</button></div></header>
@@ -431,6 +481,10 @@ function App() {
   }
   const [sendingExport, setSendingExport] = useState("");
   const [quickBusy, setQuickBusy] = useState(false);
+  const [busyGroups, setBusyGroups] = useState(new Set<string>());
+  const [ledgerStage, setLedgerStage] = useState<"all" | "attention" | "confirm" | "approve">("all");
+  const [cursor, setCursor] = useState<number | null>(null);
+  const [focusDate, setFocusDate] = useState(false);
   const [scanner, setScanner] = useState<any>(null);
   const [controller, setController] = useState<AbortController | null>(null);
   const [release, setRelease] = useState<(() => void) | null>(null);
@@ -555,6 +609,63 @@ function App() {
   const approvedGroups = state.groups.filter(group => group.state === "approved");
   const confirmPages = confirmGroups.reduce((total, group) => total + group.receipts.filter(receipt => receipt.timestamp_review === 1).length, 0);
   const editingGroup = editingId ? state.groups.find(group => group.id === editingId) : undefined;
+  const approveIds = new Set(approveGroups.map(group => group.id));
+  // The three locked buckets stop being sections and become the ledger's sort order plus its filters.
+  // Undated groups lead the queue (they need the most judgment); dated ones run newest first, matching the feed.
+  const orderLedger = (groups: Group[]) => [...groups].sort((a, b) => {
+    const first = groupTitle(a), second = groupTitle(b);
+    const undatedFirst = first.startsWith("#"), undatedSecond = second.startsWith("#");
+    if (undatedFirst !== undatedSecond) return undatedFirst ? -1 : 1;
+    return second.localeCompare(first);
+  });
+  const stageGroups = { attention: orderLedger(attentionGroups), confirm: orderLedger(confirmBucket), approve: orderLedger(approveBucket) };
+  const ledger = ledgerStage === "all" ? [...stageGroups.attention, ...stageGroups.confirm, ...stageGroups.approve] : stageGroups[ledgerStage];
+  // The key handler is registered once, so it reads the live ledger and cursor through refs: a
+  // closure captured between polls can step onto the wrong group or one that no longer exists.
+  const ledgerRef = useRef(ledger);
+  ledgerRef.current = ledger;
+  const cursorRef = useRef<number | null>(null);
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const confirmIdsRef = useRef(confirmIds);
+  confirmIdsRef.current = confirmIds;
+  const approveIdsRef = useRef(approveIds);
+  approveIdsRef.current = approveIds;
+  function openGroup(group: Group, date = false) { setFocusDate(date); setEditingId(group.id); }
+  function moveCursor(next: number | null) { cursorRef.current = next; setCursor(next); }
+  useEffect(() => {
+    if (cursor === null) return;
+    document.querySelector(`[data-ledger-index="${Math.min(cursor, Math.max(0, ledgerRef.current.length - 1))}"]`)?.scrollIntoView({ block: "nearest" });
+  }, [cursor]);
+  useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      if (tab !== "review" || editingId || event.metaKey || event.ctrlKey || event.altKey) return;
+      const target = event.target as HTMLElement | null;
+      if (target && ["INPUT", "SELECT", "TEXTAREA"].includes(target.tagName)) return;
+      const groups = ledgerRef.current;
+      const index = cursorRef.current === null ? -1 : Math.min(cursorRef.current, Math.max(0, groups.length - 1));
+      const key = event.key.toLowerCase();
+      if (key === "j" || key === "k") {
+        event.preventDefault();
+        moveCursor(groups.length ? (index < 0 ? (key === "j" ? 0 : groups.length - 1)
+          : Math.max(0, Math.min(index + (key === "j" ? 1 : -1), groups.length - 1))) : null);
+        return;
+      }
+      if (index < 0 || groups.length === 0) return;
+      const group = groups[index];
+      if (key === "o") { event.preventDefault(); openGroup(group); return; }
+      if (key === "x") { event.preventDefault(); openGroup(group, true); return; }
+      if (key !== "enter") return;
+      // Enter belongs to whichever real control the keyboard user tabbed into.
+      if (target?.closest(".cell")) return;
+      const fix = primaryFix(group, stateRef.current.jobs, confirmIdsRef.current, approveIdsRef.current);
+      if (!fix) { setStatus(`${groupTitle(group)} needs judgment: press O to open it (${groupIssues(group)[0]?.label ?? "ready to approve"}).`); return; }
+      event.preventDefault();
+      void runFix(group, fix);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [tab, editingId]);
   async function approveGroup(group: Group) {
     setQuickBusy(true);
     try {
@@ -563,6 +674,40 @@ function App() {
       await refresh();
       setStatus("Approval queued. Originals remain until all approved artifacts are durable.");
     } catch (error) { setStatus(String(error)); } finally { setQuickBusy(false); }
+  }
+  // One-row scope of a batch verb: the ledger button and the toolbar button are the same call at
+  // two widths, so a row can never claim something the batch path would refuse.
+  async function runOnGroup(group: Group, action: () => Promise<string>) {
+    setBusyGroups(previous => new Set(previous).add(group.id));
+    try { setStatus(await action()); await refresh(); }
+    catch (error) { setStatus(String(error)); }
+    finally { setBusyGroups(previous => { const next = new Set(previous); next.delete(group.id); return next; }); }
+  }
+  const confirmGroup = (group: Group) => runOnGroup(group, async () => {
+    const receiptIds = group.receipts.filter(receipt => receipt.timestamp_review === 1).map(receipt => receipt.id);
+    const result = await api<{ confirmed: number; skipped: { reason: string }[] }>("/api/receipts/confirm-proposed",
+      { groups: { [group.id]: group.version }, receipt_ids: receiptIds });
+    return `Confirmed ${groupTitle(group)}: timestamp, physical bottom and legibility attested on ${result.confirmed} page${result.confirmed === 1 ? "" : "s"}.`;
+  });
+  const attestGroup = (group: Group) => runOnGroup(group, async () => {
+    let version = group.version; let pages = 0;
+    for (const receipt of group.receipts) if (!receipt.complete || !receipt.readable) {
+      const result = await api<{ version: number }>(`/api/receipts/${receipt.id}/attest`, { version, complete: true, readable: true });
+      version = result.version; pages++;
+    }
+    return `Attested bottom and legibility for ${pages} page${pages === 1 ? "" : "s"} in ${groupTitle(group)}; the stored timestamp was left alone.`;
+  });
+  const retryApproval = (group: Group) => runOnGroup(group, async () => {
+    const job = failedApproveJob(group, state.jobs);
+    if (!job) throw new Error("This group has no failed approval job to retry");
+    await api(`/api/jobs/${job.id}/retry`);
+    return `Requeued the approval job for ${groupTitle(group)}.`;
+  });
+  function runFix(group: Group, fix: NonNullable<Fix>) {
+    if (fix.kind === "confirm") return confirmGroup(group);
+    if (fix.kind === "attest") return attestGroup(group);
+    if (fix.kind === "approve") return approveGroup(group);
+    return retryApproval(group);
   }
   async function confirmReady() {
     const receiptIds = confirmGroups.flatMap(group => group.receipts.filter(receipt => receipt.timestamp_review === 1).map(receipt => receipt.id));
@@ -629,19 +774,18 @@ function App() {
         <button role="tab" class="tab" id="tab-jobs" aria-controls="panel-jobs" aria-selected={tab === "jobs"} onClick={() => showTab("jobs")}>Jobs<span class="tab-count">{activeJobs.length}</span></button>
       </nav>
       <div class="panel" role="tabpanel" id="panel-review" aria-labelledby="tab-review" hidden={tab !== "review"}>
-        <div class="toolbar"><div class="row"><button disabled={!selected.size} onClick={combine}>Make selected pages a manual group ({selected.size})</button>
-          <button class="secondary" onClick={() => setSelected(new Set())}>Clear selection</button></div>
-          <div class="row"><button disabled={quickBusy || !confirmGroups.length} onClick={confirmReady}>Confirm ready pages ({confirmPages})</button>
-            <button class="secondary" disabled={quickBusy || !approveGroups.length} onClick={approveAll}>Approve ready groups ({approveGroups.length})</button></div></div>
-        {attentionGroups.length > 0 && <section class="bucket" data-bucket="attention"><h2>Needs attention ({attentionGroups.length})</h2><div class="bucket-grid">
-          {attentionGroups.map(group => <GroupRow key={group.id} group={group} busy={quickBusy}
-            edit={() => setEditingId(group.id)} approve={() => approveGroup(group)} />)}</div></section>}
-        {confirmBucket.length > 0 && <section class="bucket" data-bucket="confirm"><h2>Ready to confirm ({confirmBucket.length})</h2><div class="bucket-grid">
-          {confirmBucket.map(group => <GroupRow key={group.id} group={group} busy={quickBusy}
-            edit={() => setEditingId(group.id)} approve={() => approveGroup(group)} />)}</div></section>}
-        {approveBucket.length > 0 && <section class="bucket" data-bucket="approve"><h2>Ready to approve ({approveBucket.length})</h2><div class="bucket-grid">
-          {approveBucket.map(group => <GroupRow key={group.id} group={group} busy={quickBusy}
-            edit={() => setEditingId(group.id)} approve={() => approveGroup(group)} />)}</div></section>}
+        <div class="toolbar"><div class="row"><button disabled={quickBusy || !confirmGroups.length} onClick={confirmReady}>Confirm ready pages ({confirmPages})</button>
+          <button class="secondary" disabled={quickBusy || !approveGroups.length} onClick={approveAll}>Approve ready groups ({approveGroups.length})</button>
+          {selected.size > 0 && <><button onClick={combine}>Make selected pages a manual group ({selected.size})</button>
+            <button class="secondary" onClick={() => setSelected(new Set())}>Clear selection</button></>}</div></div>
+        {reviewGroups.length > 0 && <div class="ledger-head"><span>Review · {reviewGroups.length}</span>
+          <button class="filter" aria-pressed={ledgerStage === "attention"} onClick={() => setLedgerStage(ledgerStage === "attention" ? "all" : "attention")}>▲ fix {attentionGroups.length}</button>
+          <button class="filter" aria-pressed={ledgerStage === "confirm"} onClick={() => setLedgerStage(ledgerStage === "confirm" ? "all" : "confirm")}>● one key {confirmBucket.length}</button>
+          <button class="filter" aria-pressed={ledgerStage === "approve"} onClick={() => setLedgerStage(ledgerStage === "approve" ? "all" : "approve")}>✓ go {approveGroups.length}</button>
+          <span class="legend">J K step · Enter fix · O open · X date fix</span></div>}
+        {ledger.length > 0 && <div class="ledger">{ledger.map((group, index) => <LedgerCell key={group.id} group={group} index={index}
+          fix={primaryFix(group, state.jobs, confirmIds, approveIds)} focused={cursor === index} busy={quickBusy || busyGroups.has(group.id)}
+          edit={() => openGroup(group)} act={() => { const fix = primaryFix(group, state.jobs, confirmIds, approveIds); return fix ? runFix(group, fix) : Promise.resolve(); }} />)}</div>}
         {!reviewGroups.length && <section class="empty"><h2>Your staging area is ready</h2><p>Connect the scanner or import an unprocessed image to begin.</p></section>}
       </div>
       <div class="panel" role="tabpanel" id="panel-exports" aria-labelledby="tab-exports" hidden={tab !== "exports"}>
@@ -682,9 +826,9 @@ function App() {
         }}>Retry</button>}</p>)}
         {!state.jobs.length && <section class="empty"><h2>No background jobs recorded</h2><p>Processing and delivery jobs appear here.</p></section>}
       </div>
-      {editingGroup && <GroupEditor key={editingGroup.id} group={editingGroup} selected={selected}
+      {editingGroup && <GroupEditor key={editingGroup.id} group={editingGroup} selected={selected} focusDate={focusDate}
         select={(id, value) => setSelected(previous => { const next = new Set(previous); value ? next.add(id) : next.delete(id); return next; })}
-        refresh={refresh} report={setStatus} close={() => setEditingId(null)} />}
+        refresh={refresh} report={setStatus} close={() => { setEditingId(null); setFocusDate(false); }} />}
     </section>
   </main>;
 }

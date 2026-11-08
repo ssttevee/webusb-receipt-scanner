@@ -20,7 +20,7 @@ from PIL import Image
 
 from .drive import Drive
 from .analysis_jobs import current_run, ensure_run, processing_active, queue_analysis, read_evidence, run_info
-from .models import AnalysisRequest, Approval, Capture, ConfirmProposed, Edit, Membership, Version
+from .models import AnalysisRequest, Approval, Attest, Capture, ConfirmProposed, Edit, Membership, Version
 from .storage import Settings, Store, digest, durable_write, encode, ensure_directory, sync_directory
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -334,6 +334,21 @@ def create_app(settings=None, drive=None):
             current = receipt_row(connection, identity)
             version = store.group(connection, current["group_id"])["version"]
         return {"saved": True, "group_id": current["group_id"], "version": version}
+
+    @app.post("/api/receipts/{identity}/attest")
+    def attest(identity: str, change: Attest):
+        # The operator's physical-bottom/readability attestation on its own: it never rewrites
+        # the proposal state and never re-groups, so one keystroke cannot move a page's identity.
+        with store.transaction() as connection:
+            receipt = receipt_row(connection, identity)
+            group = group_for_edit(connection, receipt["group_id"], change.version)
+            if receipt["state"] != "ready":
+                fail("Wait for image processing before reviewing")
+            connection.execute("UPDATE receipts SET complete=?, readable=? WHERE id=?",
+                (int(change.complete), int(change.readable), identity))
+            store.changed(connection, group["id"])
+            version = store.group(connection, group["id"])["version"]
+        return {"saved": True, "group_id": group["id"], "version": version}
 
     @app.post("/api/groups/membership")
     def membership(change: Membership):

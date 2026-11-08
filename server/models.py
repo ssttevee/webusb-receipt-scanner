@@ -80,6 +80,12 @@ class Version(Model):
     version: int = Field(gt=0)
 
 
+class Attest(Model):
+    version: int = Field(gt=0)
+    complete: bool
+    readable: bool
+
+
 class ConfirmProposed(Model):
     groups: dict[str, int] = Field(min_length=1, max_length=100)
     receipt_ids: list[str] = Field(min_length=1, max_length=500)
