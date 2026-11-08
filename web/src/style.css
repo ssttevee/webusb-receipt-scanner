@@ -42,7 +42,7 @@ input[type=file]::file-selector-button{font:inherit;font-weight:600;padding:6px 
 @media(min-width:1100px){
 .pages>div:only-child>.receipt{display:grid;grid-template-columns:minmax(320px,44%) minmax(340px,1fr);column-gap:18px;align-items:start}
 .pages>div:only-child>.receipt>header{grid-column:1/-1}
-.pages>div:only-child>.receipt>.thumbnail{grid-column:1;grid-row:2;position:sticky;top:8px;height:auto;max-height:64vh}
+.pages>div:only-child>.receipt>.thumbnail{grid-column:1;grid-row:2/span 16;position:sticky;top:8px;height:auto;max-height:64vh}
 .pages>div:only-child>.receipt>*:not(header):not(.thumbnail){grid-column:2}
 }
 .receipt{border:1px solid #dfe6e9;border-radius:10px;padding:14px}

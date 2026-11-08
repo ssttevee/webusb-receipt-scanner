@@ -143,7 +143,6 @@ function ReceiptEditor({ receipt, group, refresh, selected, select, report, onDi
       onChange={event => select(event.currentTarget.checked)} /> Select page <code>{receipt.id.slice(0, 8)}</code></label>
       <span class="badge">{receipt.state}</span></header>
     {receipt.state === "ready" && <img class="thumbnail" src={`/api/receipts/${receipt.id}/image`} alt={`Receipt ${receipt.id.slice(0, 8)} preview`} loading="lazy" onClick={inspect} />}
-    {receipt.state === "ready" && <AnalysisControls receipt={receipt} group={group} refresh={refresh} report={report} />}
     {extraction && <section class="proposal"><strong>{extraction.selected ? "OCR timestamp proposal — confirm against the scan" : "Timestamp needs manual review"}</strong>
       {extraction.routing?.selected_engine === "rapidocr" && <p>RapidOCR fallback supplied this proposal. Inspect both engine source lists.</p>}
       {extraction.routing?.primary_issues.length ? <p class="muted">Primary OCR: {extraction.routing.primary_issues.map(issue => issue.replaceAll("_", " ")).join(" · ")}</p> : null}
@@ -183,6 +182,7 @@ function ReceiptEditor({ receipt, group, refresh, selected, select, report, onDi
         </div>
       </fieldset>
     </form>
+    {receipt.state === "ready" && <AnalysisControls receipt={receipt} group={group} refresh={refresh} report={report} />}
     {stale && editable && <p role="alert">This group changed. <button class="secondary" onClick={() => {
       setDate(receipt.date ?? ""); setClock(receipt.time ?? ""); setVendor(receipt.vendor ?? "");
       setComplete(Boolean(receipt.complete)); setReadable(Boolean(receipt.readable)); setBaseVersion(group.version); setDirty(false);
