@@ -62,15 +62,22 @@ summary{cursor:pointer;font-weight:600;margin:8px 0}
 .empty{text-align:center;padding:40px 24px}
 .jobs p{padding:8px 0;border-bottom:1px solid #d4dfe4}
 code{font-size:.85em}
-.inspection-overlay{position:fixed;inset:0;z-index:20;background:#0f242cd9;display:flex;align-items:center;justify-content:center;padding:18px}
+dialog.inspection{position:fixed;inset:0;width:100vw;height:100vh;max-width:none;max-height:none;margin:0;padding:18px;border:0;background:#0f242cd9;align-items:center;justify-content:center}
+dialog.inspection[open]{display:flex}
+dialog.inspection::backdrop{background:transparent}
 .inspection-modal{display:flex;flex-direction:column;background:white;border-radius:14px;width:min(1100px,100%);max-height:calc(100dvh - 36px);padding:16px 18px;overflow:hidden}
 .inspection-head{display:flex;align-items:center;justify-content:space-between;gap:14px}
 .inspection-modal .strip{overflow:auto;background:#e8edef;margin:12px 0;flex:1;min-height:0}
 .strip img{display:block;max-width:none}
+dialog.editor{width:min(1000px,94vw);max-height:88dvh;margin:auto;padding:0;border:1px solid #d4dfe4;border-radius:14px;background:white;box-shadow:0 12px 44px #142a3540;overflow:hidden}
+dialog.editor[open]{display:flex;flex-direction:column}
+dialog.editor::backdrop{background:#0f242ca8}
+dialog.editor>.editor-head{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:14px 18px;border-bottom:1px solid #d4dfe4}
+dialog.editor>.pages{padding:16px 18px;overflow:auto;flex:1;min-height:0}
+dialog.editor>.approval,dialog.editor>.muted{margin:0 18px 16px}
 .bucket>h2{position:sticky;top:-16px;z-index:2;background:#eef2f4;margin:14px 0 8px;padding:6px 0;font-size:.9rem;letter-spacing:.05em;text-transform:uppercase;color:#3c5560}
 .bucket:first-child>h2{margin-top:0}
 .bucket-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:6px;align-items:stretch}
-.bucket-grid>.group:not(.dense){grid-column:1/-1}
 .group.dense{padding:6px 10px;border-radius:8px}
 .group.dense>header{gap:8px;flex-wrap:nowrap}
 .group.dense .group-title{align-items:center;flex-wrap:wrap;gap:5px 7px;min-width:0}
@@ -92,7 +99,7 @@ code{font-size:.85em}
 .group-title{display:flex;align-items:flex-start;gap:10px;min-width:0}
 .group .expand{background:none;border:0;padding:4px;width:22px;height:22px;flex:none;cursor:pointer}
 .group .expand::before{content:"";display:block;width:8px;height:8px;margin:4px;border:solid #294550;border-width:0 2px 2px 0;transform:rotate(-45deg)}
-.group .expand[aria-expanded=true]::before{transform:rotate(45deg)}
+.group .group-title>h2{cursor:pointer}
 .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
 .receipt-chip{display:inline-flex;align-items:center;gap:6px;border:1px solid #dfe6e9;border-radius:8px;padding:4px 8px;background:#f7fafb;font-size:.8rem}
 .receipt-chip[data-severity=blocked]{background:#fbeaea;border-color:#e6b4b0}

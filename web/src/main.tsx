@@ -122,7 +122,7 @@ function ReceiptEditor({ receipt, group, refresh, selected, select, report, onDi
   const [vendor, setVendor] = useState(receipt.vendor ?? "");
   const [complete, setComplete] = useState(Boolean(receipt.complete));
   const [readable, setReadable] = useState(Boolean(receipt.readable));
-  const [inspection, setInspection] = useState(false);
+  const inspectionRef = useRef<HTMLDialogElement>(null);
   const [row, setRow] = useState(0);
   const [height, setHeight] = useState(512);
   const [evidence, setEvidence] = useState<unknown>(null);
@@ -134,18 +134,7 @@ function ReceiptEditor({ receipt, group, refresh, selected, select, report, onDi
   useEffect(() => { onDirty(receipt.id, dirty); }, [receipt.id, dirty, onDirty]);
   useEffect(() => () => onDirty(receipt.id, false), [receipt.id, onDirty]);
   const stale = baseVersion !== group.version;
-  const returnFocus = useRef<HTMLElement | null>(null);
-  function closeInspection() {
-    setInspection(false);
-    const trigger = returnFocus.current;
-    if (trigger?.isConnected) trigger.focus();
-  }
-  useEffect(() => {
-    if (!inspection) return;
-    const close = (event: KeyboardEvent) => { if (event.key === "Escape") closeInspection(); };
-    window.addEventListener("keydown", close);
-    return () => window.removeEventListener("keydown", close);
-  }, [inspection]);
+  function showInspection() { inspectionRef.current?.showModal(); }
   useEffect(() => {
     if (receipt.state !== "ready") return;
     if (!dirty && (!receipt.analysis || ["ready", "failed"].includes(receipt.analysis.state))) {
@@ -165,8 +154,7 @@ function ReceiptEditor({ receipt, group, refresh, selected, select, report, onDi
   async function inspect() {
     try {
       const result = await api<{ capture: { height: number }; processing: unknown }>(`/api/receipts/${receipt.id}/evidence`, undefined, "GET");
-      returnFocus.current = document.activeElement as HTMLElement | null;
-      setHeight(result.capture.height); setEvidence(result.processing); setInspection(true);
+      setHeight(result.capture.height); setEvidence(result.processing); showInspection();
     } catch (error) { report(String(error)); }
   }
   return <article class="receipt">
@@ -186,7 +174,7 @@ function ReceiptEditor({ receipt, group, refresh, selected, select, report, onDi
           <p><code>{candidate.dates.join(" or ") || "Unresolved date"} {candidate.time || "Invalid time"}</code></p>
           {candidate.issues.length > 0 && <p class="muted">{candidate.issues.map(issue => issue.replaceAll("_", " ")).join(" · ")}</p>}
           {candidate.sources.map((source, index) => <div key={index}><pre>{source.text}</pre>
-            <button class="secondary" onClick={event => { returnFocus.current = event.currentTarget; setRow(Math.max(0, Math.min(height - 1, source.box[1] - 24))); setInspection(true); }}>Inspect source at row {source.box[1]}</button>
+            <button class="secondary" onClick={() => { setRow(Math.max(0, Math.min(height - 1, source.box[1] - 24))); showInspection(); }}>Inspect source at row {source.box[1]}</button>
           </div>)}
         </div>)}
       </details>
@@ -232,11 +220,11 @@ function ReceiptEditor({ receipt, group, refresh, selected, select, report, onDi
     }}>Delete scan</button></p>}
 
     {receipt.state === "ready" && <button class="secondary" onClick={inspect}>Inspect full-resolution strips & OCR</button>}
-    {inspection && <div class="inspection-overlay" role="dialog" aria-modal="true" aria-label={`Full-resolution inspection for receipt ${receipt.id.slice(0, 8)}`}
-      onClick={event => { if (event.target === event.currentTarget) closeInspection(); }}>
+    <dialog class="inspection" ref={inspectionRef} aria-modal="true" aria-label={`Full-resolution inspection for receipt ${receipt.id.slice(0, 8)}`}
+      onClick={event => { if (event.target === event.currentTarget) inspectionRef.current?.close(); }}>
       <section class="inspection-modal">
         <header class="inspection-head"><h2>Full-resolution strips & OCR <span class="muted">page <code>{receipt.id.slice(0, 8)}</code></span></h2>
-          <button class="secondary" autofocus onClick={closeInspection}>Close inspection</button></header>
+          <button class="secondary" autofocus onClick={() => inspectionRef.current?.close()}>Close inspection</button></header>
         <div class="row"><button disabled={row === 0} onClick={() => setRow(Math.max(0, row - 512))}>Previous strip</button>
           <label>Starting row<input type="number" min="0" max={height - 1} value={row} onInput={event => setRow(Math.max(0, Math.min(height - 1, Number(event.currentTarget.value))))} /></label>
           <button disabled={row + 512 >= height} onClick={() => setRow(row + 512)}>Next strip</button>
@@ -244,7 +232,7 @@ function ReceiptEditor({ receipt, group, refresh, selected, select, report, onDi
         <div class="strip"><img src={`/api/receipts/${receipt.id}/image?top=${row}`} alt={`Full-resolution rows ${row}–${Math.min(row + 512, height)}`} /></div>
         <details><summary>Unvalidated local OCR evidence</summary><pre>{JSON.stringify(evidence, null, 2)}</pre></details>
       </section>
-    </div>}
+    </dialog>
   </article>;
 }
 
@@ -313,49 +301,23 @@ function ReceiptChip({ receipt, selectable, isSelected, onSelect }: {
   </div>;
 }
 
-function GroupRow({ group, expanded, onToggle, selected, select, refresh, report }: {
-  group: Group; expanded: boolean; onToggle: () => void;
-  selected: Set<string>; select: (id: string, value: boolean) => void;
-  refresh: () => Promise<void>; report: (value: string) => void;
-}) {
-  const [reservation, setReservation] = useState<Reservation | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [dirtyPages, setDirtyPages] = useState(new Set<string>());
-  const flagDirty = useCallback((id: string, dirty: boolean) => setDirtyPages(previous => {
-    if (previous.has(id) === dirty) return previous;
-    const next = new Set(previous); dirty ? next.add(id) : next.delete(id); return next;
-  }), []);
-  useEffect(() => setReservation(null), [group.version]);
-  const instantlyApprovable = group.state === "staging" && group.receipts.length > 0 && group.receipts.every(receipt =>
+function isInstantlyApprovable(group: Group) {
+  return group.state === "staging" && group.receipts.length > 0 && group.receipts.every(receipt =>
     receipt.state === "ready" && receipt.date && receipt.time && !receipt.error && !receipt.timestamp_review
     && receipt.field_source === "confirmed" && Boolean(receipt.complete) && Boolean(receipt.readable)
     && !["queued", "running"].includes(receipt.analysis?.state ?? "ready"));
-  async function approveNow() {
-    await act(async () => {
-      const reservation = await api<Reservation>(`/api/groups/${group.id}/prepare`, { version: group.version });
-      await api(`/api/groups/${group.id}/approve`, { export_id: reservation.id, version: reservation.version });
-      report("Approval queued. Originals remain until all approved artifacts are durable.");
-    });
-  }
-  async function act(callback: () => Promise<void>) {
-    setBusy(true); try { await callback(); await refresh(); } catch (error) { report(String(error)); } finally { setBusy(false); }
-  }
-  async function move(index: number, delta: number) {
-    const order = group.receipts.map(receipt => receipt.id);
-    [order[index], order[index + delta]] = [order[index + delta], order[index]];
-    await api("/api/groups/membership", { groups: { [group.id]: group.version }, receipt_ids: order });
-  }
+}
+
+// One dense row per group. Fields and approval live in the shared editor dialog, which the
+// app keeps mounted so a group moving between buckets mid-edit cannot discard local edits.
+function GroupRow({ group, edit, approve, busy }: {
+  group: Group; edit: () => void; approve: () => Promise<void>; busy: boolean;
+}) {
   const issues = groupIssues(group);
-  const actionButton = group.state === "staging" && (instantlyApprovable
-    ? <button disabled={busy || dirtyPages.size > 0} onClick={approveNow}>Approve</button>
-    : <button disabled={busy || dirtyPages.size > 0} onClick={() => act(async () => {
-      const result = await api<Reservation>(`/api/groups/${group.id}/prepare`, { version: group.version }); setReservation(result);
-      if (!expanded) onToggle();
-    })}>Prepare approval</button>);
-  if (!expanded) return <section class="group dense" data-group-id={group.id} data-severity={groupSeverity(group)}>
-    <header><div class="group-title">
-      <button class="expand" aria-expanded={false} aria-controls={`grp-${group.id}-pages`}
-        aria-label={`Expand group ${group.receipts[0]?.date || group.id.slice(0, 8)}`} onClick={onToggle} />
+  const title = group.receipts[0]?.date || group.id.slice(0, 8);
+  return <section class="group dense" data-group-id={group.id} data-severity={groupSeverity(group)}>
+    <header><div class="group-title" onClick={edit}>
+      <button class="expand" aria-haspopup="dialog" aria-label={`Edit group ${title}`} onClick={edit} />
       <span class="thumbs">{group.receipts.slice(0, 3).map(receipt => <img key={receipt.id} src={`/api/receipts/${receipt.id}/image`} alt="" loading="lazy" />)}
         {group.receipts.length > 3 && <span class="thumb-more">+{group.receipts.length - 3}</span>}</span>
       <h2 title={`version ${group.version} · ${group.manual ? "manual grouping" : "same-minute grouping"}`}>
@@ -363,16 +325,61 @@ function GroupRow({ group, expanded, onToggle, selected, select, refresh, report
       {group.state === "approval_failed" && <span class="pill bad">approval failed</span>}
       {issues.slice(0, 3).map(issue => <span class={`pill ${issue.hard ? "bad" : "warn"}`} key={issue.label}>{issue.label}{issue.count > 1 ? ` ×${issue.count}` : ""}</span>)}
       {issues.length > 3 && <span class="pill">+{issues.length - 3} more</span>}
-    </div>{actionButton}</header></section>;
-  return <section class="group" data-group-id={group.id} data-severity={groupSeverity(group)}>
-    <header><div class="group-title">
-      <button class="expand" aria-expanded={expanded} aria-controls={`grp-${group.id}-pages`}
-        aria-label={`Collapse group ${group.receipts[0]?.date || group.id.slice(0, 8)}`} onClick={onToggle} />
-      <div><h2>{group.receipts[0]?.date || "Needs review"} <span class="muted">{group.receipts.length} page{group.receipts.length === 1 ? "" : "s"}</span></h2>
+    </div>{isInstantlyApprovable(group) && <button disabled={busy} onClick={approve}>Approve</button>}</header>
+  </section>;
+}
+
+function GroupEditor({ group, selected, select, refresh, report, close }: {
+  group: Group; selected: Set<string>; select: (id: string, value: boolean) => void;
+  refresh: () => Promise<void>; report: (value: string) => void; close: () => void;
+}) {
+  const [reservation, setReservation] = useState<Reservation | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [dirtyPages, setDirtyPages] = useState(new Set<string>());
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const flagDirty = useCallback((id: string, dirty: boolean) => setDirtyPages(previous => {
+    if (previous.has(id) === dirty) return previous;
+    const next = new Set(previous); dirty ? next.add(id) : next.delete(id); return next;
+  }), []);
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    dialog.showModal();
+    return () => { if (dialog.open) dialog.close(); };
+  }, []);
+  useEffect(() => setReservation(null), [group.version]);
+  const instantlyApprovable = isInstantlyApprovable(group);
+  async function act(callback: () => Promise<void>) {
+    setBusy(true); try { await callback(); await refresh(); } catch (error) { report(String(error)); } finally { setBusy(false); }
+  }
+  function approveNow() {
+    return act(async () => {
+      const reservation = await api<Reservation>(`/api/groups/${group.id}/prepare`, { version: group.version });
+      await api(`/api/groups/${group.id}/approve`, { export_id: reservation.id, version: reservation.version });
+      close();
+      report("Approval queued. Originals remain until all approved artifacts are durable.");
+    });
+  }
+  async function move(index: number, delta: number) {
+    const order = group.receipts.map(receipt => receipt.id);
+    [order[index], order[index + delta]] = [order[index + delta], order[index]];
+    await api("/api/groups/membership", { groups: { [group.id]: group.version }, receipt_ids: order });
+  }
+  function prepareReservation() {
+    return act(async () => {
+      const result = await api<Reservation>(`/api/groups/${group.id}/prepare`, { version: group.version }); setReservation(result);
+    });
+  }
+  const title = group.receipts[0]?.date || group.id.slice(0, 8);
+  return <dialog class="editor" ref={dialogRef} aria-label={`Review group ${title}`} onClose={close}
+    onClick={event => { if (event.target === event.currentTarget) dialogRef.current?.close(); }}>
+    <header class="editor-head"><div><h2>{group.receipts[0]?.date || "Needs review"} <span class="muted">{group.receipts.length} page{group.receipts.length === 1 ? "" : "s"}</span></h2>
       <p><span class="badge">{group.state.replaceAll("_", " ")}</span> · version {group.version} · {group.manual ? "manual grouping" : "same-minute grouping"}</p>
-      {group.state === "approval_failed" && <p class="muted">Approval failed. Open the Jobs tab and retry its approve job.</p>}</div></div>
-      {actionButton}</header>
-    <div class="pages" id={`grp-${group.id}-pages`}>{group.receipts.map((receipt, index) => <div key={receipt.id}>
+      {group.state === "approval_failed" && <p class="muted">Approval failed. Open the Jobs tab and retry its approve job.</p>}</div>
+      <div class="row">{instantlyApprovable && <button disabled={busy || dirtyPages.size > 0} onClick={approveNow}>Approve</button>}
+        {group.state === "staging" && !instantlyApprovable && <button disabled={busy || dirtyPages.size > 0} onClick={prepareReservation}>Prepare approval</button>}
+        <button class="secondary" onClick={() => dialogRef.current?.close()}>Close</button></div></header>
+    <div class="pages">{group.receipts.map((receipt, index) => <div key={receipt.id}>
       {group.state === "staging" && group.receipts.length > 1 && <div class="row"><span>Page {index + 1}</span>
         <button disabled={index === 0 || busy} onClick={() => act(() => move(index, -1))}>Move up</button>
         <button disabled={index === group.receipts.length - 1 || busy} onClick={() => act(() => move(index, 1))}>Move down</button></div>}
@@ -383,9 +390,10 @@ function GroupRow({ group, expanded, onToggle, selected, select, refresh, report
       {reservation.note && <p>{reservation.note}</p>}
       <p>Approval freezes these fields, page order and reference images.</p><button disabled={busy || dirtyPages.size > 0} onClick={() => act(async () => {
         await api(`/api/groups/${group.id}/approve`, { export_id: reservation.id, version: reservation.version }); setReservation(null);
+        dialogRef.current?.close();
         report("Approval queued. Originals remain until all approved artifacts are durable.");
       })}>Approve this version</button></div>}
-  </section>;
+  </dialog>;
 }
 
 function App() {
@@ -395,10 +403,7 @@ function App() {
   const [diagnostics, setDiagnostics] = useState<Diagnostic[]>([]);
   const memoryDiagnostics = useRef<Diagnostic[]>([]);
   const [selected, setSelected] = useState(new Set<string>());
-  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>(() => {
-    try { const saved = JSON.parse(localStorage.getItem("receipt-review-expanded") ?? "{}"); return typeof saved === "object" && saved !== null ? saved as Record<string, boolean> : {}; }
-    catch { return {}; }
-  });
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [connecting, setConnecting] = useState(false);
@@ -548,25 +553,17 @@ function App() {
   const approveBucket = reviewGroups.filter(group => !attentionIds.has(group.id) && !confirmIds.has(group.id));
   const finalizingGroups = state.groups.filter(group => group.state === "finalizing");
   const approvedGroups = state.groups.filter(group => group.state === "approved");
-  // Small workspaces stay readable by default; at 4+ groups every row starts dense.
-  // Once a row is open in this session it stays open until explicitly collapsed, so
-  // resolving attention (or bucket churn during polling) never hides it mid-task.
-  const sessionExpanded = useRef(new Set<string>());
-  const isExpanded = (group: Group) => {
-    const explicit = expandedGroups[group.id];
-    if (explicit !== undefined) return explicit;
-    const open = sessionExpanded.current.has(group.id) || (groupSeverity(group) === "blocked" && reviewGroups.length <= 3);
-    if (open) sessionExpanded.current.add(group.id);
-    return open;
-  };
-  function persistExpanded(next: Record<string, boolean>) {
-    setExpandedGroups(next);
-    try { localStorage.setItem("receipt-review-expanded", JSON.stringify(next)); }
-    catch { setStatus("Row density persists per browser, but this browser could not save it."); }
-  }
-  const toggleGroup = (group: Group) => persistExpanded({ ...expandedGroups, [group.id]: !isExpanded(group) });
-  const setAllExpanded = (open: boolean) => persistExpanded(Object.fromEntries(reviewGroups.map(group => [group.id, open])));
   const confirmPages = confirmGroups.reduce((total, group) => total + group.receipts.filter(receipt => receipt.timestamp_review === 1).length, 0);
+  const editingGroup = editingId ? state.groups.find(group => group.id === editingId) : undefined;
+  async function approveGroup(group: Group) {
+    setQuickBusy(true);
+    try {
+      const reservation = await api<Reservation>(`/api/groups/${group.id}/prepare`, { version: group.version });
+      await api(`/api/groups/${group.id}/approve`, { export_id: reservation.id, version: reservation.version });
+      await refresh();
+      setStatus("Approval queued. Originals remain until all approved artifacts are durable.");
+    } catch (error) { setStatus(String(error)); } finally { setQuickBusy(false); }
+  }
   async function confirmReady() {
     const receiptIds = confirmGroups.flatMap(group => group.receipts.filter(receipt => receipt.timestamp_review === 1).map(receipt => receipt.id));
     const dates = confirmGroups.flatMap(group => group.receipts.map(receipt => receipt.date!)).sort();
@@ -635,21 +632,16 @@ function App() {
         <div class="toolbar"><div class="row"><button disabled={!selected.size} onClick={combine}>Make selected pages a manual group ({selected.size})</button>
           <button class="secondary" onClick={() => setSelected(new Set())}>Clear selection</button></div>
           <div class="row"><button disabled={quickBusy || !confirmGroups.length} onClick={confirmReady}>Confirm ready pages ({confirmPages})</button>
-            <button class="secondary" disabled={quickBusy || !approveGroups.length} onClick={approveAll}>Approve ready groups ({approveGroups.length})</button></div>
-          <div class="row"><button class="secondary" onClick={() => setAllExpanded(true)}>Expand all</button>
-            <button class="secondary" onClick={() => setAllExpanded(false)}>Collapse all</button></div></div>
+            <button class="secondary" disabled={quickBusy || !approveGroups.length} onClick={approveAll}>Approve ready groups ({approveGroups.length})</button></div></div>
         {attentionGroups.length > 0 && <section class="bucket" data-bucket="attention"><h2>Needs attention ({attentionGroups.length})</h2><div class="bucket-grid">
-          {attentionGroups.map(group => <GroupRow key={group.id} group={group} expanded={isExpanded(group)} onToggle={() => toggleGroup(group)}
-            selected={selected} select={(id, value) => setSelected(previous => { const next = new Set(previous); value ? next.add(id) : next.delete(id); return next; })}
-            refresh={refresh} report={setStatus} />)}</div></section>}
+          {attentionGroups.map(group => <GroupRow key={group.id} group={group} busy={quickBusy}
+            edit={() => setEditingId(group.id)} approve={() => approveGroup(group)} />)}</div></section>}
         {confirmBucket.length > 0 && <section class="bucket" data-bucket="confirm"><h2>Ready to confirm ({confirmBucket.length})</h2><div class="bucket-grid">
-          {confirmBucket.map(group => <GroupRow key={group.id} group={group} expanded={isExpanded(group)} onToggle={() => toggleGroup(group)}
-            selected={selected} select={(id, value) => setSelected(previous => { const next = new Set(previous); value ? next.add(id) : next.delete(id); return next; })}
-            refresh={refresh} report={setStatus} />)}</div></section>}
+          {confirmBucket.map(group => <GroupRow key={group.id} group={group} busy={quickBusy}
+            edit={() => setEditingId(group.id)} approve={() => approveGroup(group)} />)}</div></section>}
         {approveBucket.length > 0 && <section class="bucket" data-bucket="approve"><h2>Ready to approve ({approveBucket.length})</h2><div class="bucket-grid">
-          {approveBucket.map(group => <GroupRow key={group.id} group={group} expanded={isExpanded(group)} onToggle={() => toggleGroup(group)}
-            selected={selected} select={(id, value) => setSelected(previous => { const next = new Set(previous); value ? next.add(id) : next.delete(id); return next; })}
-            refresh={refresh} report={setStatus} />)}</div></section>}
+          {approveBucket.map(group => <GroupRow key={group.id} group={group} busy={quickBusy}
+            edit={() => setEditingId(group.id)} approve={() => approveGroup(group)} />)}</div></section>}
         {!reviewGroups.length && <section class="empty"><h2>Your staging area is ready</h2><p>Connect the scanner or import an unprocessed image to begin.</p></section>}
       </div>
       <div class="panel" role="tabpanel" id="panel-exports" aria-labelledby="tab-exports" hidden={tab !== "exports"}>
@@ -690,6 +682,9 @@ function App() {
         }}>Retry</button>}</p>)}
         {!state.jobs.length && <section class="empty"><h2>No background jobs recorded</h2><p>Processing and delivery jobs appear here.</p></section>}
       </div>
+      {editingGroup && <GroupEditor key={editingGroup.id} group={editingGroup} selected={selected}
+        select={(id, value) => setSelected(previous => { const next = new Set(previous); value ? next.add(id) : next.delete(id); return next; })}
+        refresh={refresh} report={setStatus} close={() => setEditingId(null)} />}
     </section>
   </main>;
 }

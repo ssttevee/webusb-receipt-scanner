@@ -12,6 +12,9 @@ import { installEpsonFixture } from "./epson-usb-fixture.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
+// Group rows stay one line tall; page fields, proposals and approvals only exist inside the row's modal editor.
+const openEditor = (page, timeout = 30000) => page.getByRole("button", { name: /^Edit group/ }).first().click({ timeout });
+const closeEditor = page => page.getByRole("button", { name: "Close", exact: true }).click();
 
 async function environment(callback, fixture = false, ocr = false) {
   const directory = await mkdtemp(join(process.env.APP_TEST_TEMP || tmpdir(), "receipt-app-test-"));
@@ -76,6 +79,7 @@ test("browser queue survives a lost acknowledgment and reload, then review/appro
     await page.reload();
     assert.equal(await page.getByLabel("Scan year century", { exact: true }).inputValue(), "1900");
     await page.waitForFunction(() => document.querySelector(".capture-panel").textContent.includes("0 browser copies pending"));
+    await openEditor(page);
     await page.waitForFunction(() => document.querySelector(".receipt .badge")?.textContent === "ready");
     assert.equal(await page.locator(".receipt").count(), 1);
     const intake = await (await page.request.get(`${origin}/api/state`)).json();
@@ -104,6 +108,7 @@ test("browser queue survives a lost acknowledgment and reload, then review/appro
     await page.getByRole("button", { name: "Approve this version", exact: true }).waitFor();
     assert.match(await page.locator(".approval").textContent(), /2026\/09-September\/20260914-1722.pdf/);
     await page.getByRole("button", { name: "Approve this version", exact: true }).click();
+    await page.waitForFunction(() => !document.querySelector("dialog.editor[open]"), null, { timeout: 15000 });
     await page.getByRole("tab", { name: /^Exports/ }).click();
     await page.getByRole("link", { name: "Download approved PDF" }).waitFor({ timeout: 30000 });
     const downloading = page.waitForEvent("download");
@@ -123,7 +128,9 @@ test("production capture UI uses the compiled Epson backend and transfers an unc
     await page.getByRole("button", { name: "Connect Epson scanner", exact: true }).click();
     await page.waitForFunction(() => document.querySelector('[role="status"]').textContent.includes("receipt-longpaper-2"));
     await page.getByRole("button", { name: "Start session", exact: true }).click();
+    await openEditor(page, 60000);
     await page.waitForFunction(() => document.querySelector(".receipt .badge")?.textContent === "ready", null, { timeout: 60000 });
+    await closeEditor(page);
     await page.getByRole("button", { name: "Stop", exact: true }).click();
     await page.getByRole("button", { name: "Disconnect", exact: true }).click();
     const state = await (await fetch(`${origin}/api/state`)).json();
@@ -152,6 +159,7 @@ test("OCR proposals prefill editable fields, expose source strips and require ex
       return canvas.toDataURL("image/png").split(",")[1];
     });
     await page.locator('input[type="file"]').setInputFiles({ name: "ocr-fixture.png", mimeType: "image/png", buffer: Buffer.from(png, "base64") });
+    await openEditor(page);
     await page.waitForFunction(() => document.querySelector(".proposal strong")?.textContent.includes("OCR timestamp proposal"), null, { timeout: 30000 });
     assert.equal(await page.getByLabel("Transaction date", { exact: true }).inputValue(), "2026-09-14");
     assert.equal(await page.getByLabel("Transaction time", { exact: true }).inputValue(), "17:21:30");
@@ -184,7 +192,9 @@ test("quick path confirms stored proposals and approves a batch without per-page
       return canvas.toDataURL("image/png").split(",")[1];
     });
     await page.locator('input[type="file"]').setInputFiles({ name: "quick-path.png", mimeType: "image/png", buffer: Buffer.from(png, "base64") });
+    await openEditor(page);
     await page.waitForFunction(() => document.querySelector(".proposal strong")?.textContent.includes("OCR timestamp proposal"), null, { timeout: 30000 });
+    await closeEditor(page);
     await page.getByRole("button", { name: /^Confirm ready pages/ }).click();
     await page.waitForFunction(() => document.querySelector('[role="status"]').textContent.includes("Confirmed 1 pages"), null, { timeout: 15000 });
     const confirmed = await (await fetch(`${origin}/api/state`)).json();
@@ -215,6 +225,7 @@ test("the sidebar expected month defaults to last month and resolves an ambiguou
       return canvas.toDataURL("image/png").split(",")[1];
     });
     await page.locator('input[type="file"]').setInputFiles({ name: "expected-month.png", mimeType: "image/png", buffer: Buffer.from(png, "base64") });
+    await openEditor(page);
     await page.waitForFunction(() => document.querySelector(".proposal strong")?.textContent.includes("OCR timestamp proposal"), null, { timeout: 30000 });
     assert.equal(await page.getByLabel("Transaction date", { exact: true }).inputValue(), "2022-09-05");
     await page.reload();
@@ -243,6 +254,7 @@ test("fallback provenance and both source branches remain visible in staging", {
       return canvas.toDataURL("image/png").split(",")[1];
     });
     await page.locator('input[type="file"]').setInputFiles({ name: "provenance.png", mimeType: "image/png", buffer: Buffer.from(png, "base64") });
+    await openEditor(page);
     await page.getByText("RapidOCR fallback supplied this proposal. Inspect both engine source lists.", { exact: true }).waitFor();
     assert.match(await page.locator(".proposal").textContent(), /Primary OCR: ocr disagreement/);
     await page.locator(".proposal summary").click();
@@ -266,6 +278,7 @@ test("a receipt-local convention reparses saved OCR and retains its prior analys
       return canvas.toDataURL("image/png").split(",")[1];
     });
     await page.locator('input[type="file"]').setInputFiles({ name: "ambiguous.png", mimeType: "image/png", buffer: Buffer.from(png, "base64") });
+    await openEditor(page);
     await page.waitForFunction(() => document.querySelector(".receipt .badge")?.textContent === "ready");
     assert.equal(await page.getByLabel("Transaction date", { exact: true }).inputValue(), "");
     await page.getByText("Date convention & reprocess", { exact: true }).click();
