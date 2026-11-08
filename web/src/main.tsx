@@ -52,6 +52,15 @@ function groupSeverity(group: Group): "blocked" | "pending" | "clear" {
   return issues.length ? "pending" : "clear";
 }
 
+function groupIssues(group: Group): { label: string; count: number; hard: boolean }[] {
+  const counts = new Map<string, { count: number; hard: boolean }>();
+  for (const receipt of group.receipts) for (const issue of receiptIssues(receipt)) {
+    const current = counts.get(issue.label);
+    counts.set(issue.label, current ? { count: current.count + 1, hard: current.hard || issue.hard } : { count: 1, hard: issue.hard });
+  }
+  return [...counts].map(([label, meta]) => ({ label, ...meta })).sort((a, b) => Number(b.hard) - Number(a.hard));
+}
+
 const database = new Dexie("receipt-transfer-queue") as Dexie & { pending: Table<Pending>; diagnostics: Table<Diagnostic> };
 database.version(1).stores({ pending: "id,created", diagnostics: "id" });
 
@@ -336,27 +345,40 @@ function GroupRow({ group, expanded, onToggle, selected, select, refresh, report
     [order[index], order[index + delta]] = [order[index + delta], order[index]];
     await api("/api/groups/membership", { groups: { [group.id]: group.version }, receipt_ids: order });
   }
+  const issues = groupIssues(group);
+  const actionButton = group.state === "staging" && (instantlyApprovable
+    ? <button disabled={busy || dirtyPages.size > 0} onClick={approveNow}>Approve</button>
+    : <button disabled={busy || dirtyPages.size > 0} onClick={() => act(async () => {
+      const result = await api<Reservation>(`/api/groups/${group.id}/prepare`, { version: group.version }); setReservation(result);
+      if (!expanded) onToggle();
+    })}>Prepare approval</button>);
+  if (!expanded) return <section class="group dense" data-group-id={group.id} data-severity={groupSeverity(group)}>
+    <header><div class="group-title">
+      <button class="expand" aria-expanded={false} aria-controls={`grp-${group.id}-pages`}
+        aria-label={`Expand group ${group.receipts[0]?.date || group.id.slice(0, 8)}`} onClick={onToggle} />
+      <span class="thumbs">{group.receipts.slice(0, 3).map(receipt => <img key={receipt.id} src={`/api/receipts/${receipt.id}/image`} alt="" loading="lazy" />)}
+        {group.receipts.length > 3 && <span class="thumb-more">+{group.receipts.length - 3}</span>}</span>
+      <h2 title={`version ${group.version} · ${group.manual ? "manual grouping" : "same-minute grouping"}`}>
+        {group.receipts[0]?.date || "Needs review"} <span class="muted">{group.receipts.length}p</span></h2>
+      {group.state === "approval_failed" && <span class="pill bad">approval failed</span>}
+      {issues.slice(0, 3).map(issue => <span class={`pill ${issue.hard ? "bad" : "warn"}`} key={issue.label}>{issue.label}{issue.count > 1 ? ` ×${issue.count}` : ""}</span>)}
+      {issues.length > 3 && <span class="pill">+{issues.length - 3} more</span>}
+    </div>{actionButton}</header></section>;
   return <section class="group" data-group-id={group.id} data-severity={groupSeverity(group)}>
     <header><div class="group-title">
       <button class="expand" aria-expanded={expanded} aria-controls={`grp-${group.id}-pages`}
-        aria-label={`${expanded ? "Collapse" : "Expand"} group ${group.receipts[0]?.date || group.id.slice(0, 8)}`} onClick={onToggle} />
+        aria-label={`Collapse group ${group.receipts[0]?.date || group.id.slice(0, 8)}`} onClick={onToggle} />
       <div><h2>{group.receipts[0]?.date || "Needs review"} <span class="muted">{group.receipts.length} page{group.receipts.length === 1 ? "" : "s"}</span></h2>
       <p><span class="badge">{group.state.replaceAll("_", " ")}</span> · version {group.version} · {group.manual ? "manual grouping" : "same-minute grouping"}</p>
       {group.state === "approval_failed" && <p class="muted">Approval failed. Open the Jobs tab and retry its approve job.</p>}</div></div>
-      {group.state === "staging" && (instantlyApprovable
-        ? <button disabled={busy || dirtyPages.size > 0} onClick={approveNow}>Approve</button>
-        : <button disabled={busy || dirtyPages.size > 0} onClick={() => act(async () => {
-          const result = await api<Reservation>(`/api/groups/${group.id}/prepare`, { version: group.version }); setReservation(result);
-        })}>Prepare approval</button>)}</header>
-    {!expanded && <div class="chips">{group.receipts.map(receipt => <ReceiptChip key={receipt.id} receipt={receipt}
-      selectable={group.state === "staging"} isSelected={selected.has(receipt.id)} onSelect={value => select(receipt.id, value)} />)}</div>}
-    {expanded && <div class="pages" id={`grp-${group.id}-pages`}>{group.receipts.map((receipt, index) => <div key={receipt.id}>
+      {actionButton}</header>
+    <div class="pages" id={`grp-${group.id}-pages`}>{group.receipts.map((receipt, index) => <div key={receipt.id}>
       {group.state === "staging" && group.receipts.length > 1 && <div class="row"><span>Page {index + 1}</span>
         <button disabled={index === 0 || busy} onClick={() => act(() => move(index, -1))}>Move up</button>
         <button disabled={index === group.receipts.length - 1 || busy} onClick={() => act(() => move(index, 1))}>Move down</button></div>}
       <ReceiptEditor key={receipt.id} receipt={receipt} group={group} refresh={refresh} selected={selected.has(receipt.id)} select={value => select(receipt.id, value)} report={report} onDirty={flagDirty} />
-    </div>)}</div>}
-    {expanded && dirtyPages.size > 0 && <p class="muted">Save or reload local field edits before approval.</p>}
+    </div>)}</div>
+    {dirtyPages.size > 0 && <p class="muted">Save or reload local field edits before approval.</p>}
     {reservation && group.state === "staging" && <div class="approval"><p>Reserved export path: <strong>{reservation.path}</strong></p>
       {reservation.note && <p>{reservation.note}</p>}
       <p>Approval freezes these fields, page order and reference images.</p><button disabled={busy || dirtyPages.size > 0} onClick={() => act(async () => {

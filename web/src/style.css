@@ -69,6 +69,19 @@ code{font-size:.85em}
 .strip img{display:block;max-width:none}
 .bucket>h2{position:sticky;top:-16px;z-index:2;background:#eef2f4;margin:14px 0 8px;padding:6px 0;font-size:.9rem;letter-spacing:.05em;text-transform:uppercase;color:#3c5560}
 .bucket:first-child>h2{margin-top:0}
+.group.dense{padding:4px 12px;border-radius:8px}
+.group.dense>header{gap:10px}
+.group.dense button{padding:3px 10px;font-size:.82rem}
+.group.dense .pill{white-space:nowrap;flex:none;padding:1px 7px;font-size:.7rem}
+.group.dense .group-title{align-items:center;flex-wrap:nowrap;gap:8px;min-width:0;overflow:hidden}
+.group.dense h2{margin:0;font-size:.92rem;white-space:nowrap}
+.group.dense .expand{width:18px;height:18px;padding:2px}
+.group.dense .expand::before{margin:2px}
+.thumbs{display:inline-flex;align-items:center;flex:none;padding-right:2px}
+.thumbs img{width:13px;height:20px;object-fit:cover;border:1px solid #c8d4da;border-radius:2px;background:white;margin-left:-4px}
+.thumbs img:first-child{margin-left:0}
+.thumbs .thumb-more{font-size:.72rem;color:#51636d;margin-left:6px}
+.group.dense .pill{flex:none}
 .group[data-severity=blocked]{border-left:4px solid #b3261e}
 .group[data-severity=pending]{border-left:4px solid #8a5a00}
 .group[data-severity=clear]{border-left:4px solid #175d50}
