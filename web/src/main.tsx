@@ -14,7 +14,7 @@ type Pending = { id: string; created: number; blob: Blob; manifest: Manifest };
 type Diagnostic = { id: string; blob: Blob; metadata: unknown };
 type Receipt = { id: string; group_id: string; date: string | null; time: string | null; state: string;
   complete: number; readable: number; vendor: string | null; error: string | null; languages: string[];
-  field_source: "manual" | "ocr" | "unresolved"; timestamp_review: number; analysis?: AnalysisRun | null };
+  field_source: "manual" | "ocr" | "unresolved" | "confirmed"; timestamp_review: number; analysis?: AnalysisRun | null };
 type AnalysisRun = { id: string; version: number; mode: string; state: string; error: string | null; has_evidence: boolean;
   policy: { requested: { date_order: string | null; century: string | number | null }; effective: { date_order: string | null; century: number | null }; source: string } };
 type Candidate = { id: string; dates: string[]; time: string | null; issues: string[];
@@ -119,6 +119,7 @@ function ReceiptEditor({ receipt, group, refresh, selected, select, report, onDi
       setBaseVersion(group.version); setDate(receipt.date ?? ""); setClock(receipt.time ?? "");
       setVendor(receipt.vendor ?? ""); setComplete(Boolean(receipt.complete)); setReadable(Boolean(receipt.readable));
     }
+    // The dependency on field_source re-syncs the local boxes after batch confirmation changes server flags.
     let active = true;
     void api<{ capture: { height: number }; processing: { extraction?: Extraction; ocr?: { fallback?: FallbackInfo } } | null }>(`/api/receipts/${receipt.id}/evidence`, undefined, "GET").then(result => {
       if (!active) return;
@@ -126,7 +127,7 @@ function ReceiptEditor({ receipt, group, refresh, selected, select, report, onDi
       setFallbackInfo(result.processing?.ocr?.fallback ?? null);
     }).catch(error => report(String(error)));
     return () => { active = false; };
-  }, [receipt.state, receipt.analysis?.id, receipt.analysis?.state]);
+  }, [receipt.state, receipt.analysis?.id, receipt.analysis?.state, receipt.field_source]);
   const editable = group.state === "staging" && receipt.state === "ready";
   async function inspect() {
     try {
@@ -146,6 +147,7 @@ function ReceiptEditor({ receipt, group, refresh, selected, select, report, onDi
       {extraction.routing?.primary_issues.length ? <p class="muted">Primary OCR: {extraction.routing.primary_issues.map(issue => issue.replaceAll("_", " ")).join(" · ")}</p> : null}
       {fallbackInfo && fallbackInfo.reason !== "primary_supported" && <p class="muted">Fallback: {fallbackInfo.state.replaceAll("_", " ")} · {fallbackInfo.seconds.toFixed(1)} seconds{fallbackInfo.reason ? ` · ${fallbackInfo.reason.replaceAll("_", " ")}` : ""}</p>}
       {receipt.field_source === "manual" && <p>Your saved fields take priority over the OCR proposal.</p>}
+      {receipt.field_source === "confirmed" && <p class="muted">Batch confirmation accepted the stored proposal and attested this page. Manual review stays available.</p>}
       {extraction.issues.length > 0 && <p class="muted">{extraction.issues.map(issue => issue.replaceAll("_", " ")).join(" · ")}</p>}
       <details><summary>Timestamp candidates & source regions ({extraction.candidates.length})</summary>
         {extraction.candidates.map(candidate => <div class="candidate" key={candidate.id}>
@@ -273,6 +275,17 @@ function GroupCard({ group, selected, select, refresh, report }: {
     const next = new Set(previous); dirty ? next.add(id) : next.delete(id); return next;
   }), []);
   useEffect(() => setReservation(null), [group.version]);
+  const instantlyApprovable = group.state === "staging" && group.receipts.length > 0 && group.receipts.every(receipt =>
+    receipt.state === "ready" && receipt.date && receipt.time && !receipt.error && !receipt.timestamp_review
+    && receipt.field_source === "confirmed" && Boolean(receipt.complete) && Boolean(receipt.readable)
+    && !["queued", "running"].includes(receipt.analysis?.state ?? "ready"));
+  async function approveNow() {
+    await act(async () => {
+      const reservation = await api<Reservation>(`/api/groups/${group.id}/prepare`, { version: group.version });
+      await api(`/api/groups/${group.id}/approve`, { export_id: reservation.id, version: reservation.version });
+      report("Approval queued. Originals remain until all approved artifacts are durable.");
+    });
+  }
   async function act(callback: () => Promise<void>) {
     setBusy(true); try { await callback(); await refresh(); } catch (error) { report(String(error)); } finally { setBusy(false); }
   }
@@ -284,9 +297,11 @@ function GroupCard({ group, selected, select, refresh, report }: {
   return <section class="group" data-group-id={group.id}>
     <header><div><h2>{group.receipts[0]?.date || "Needs review"} <span class="muted">{group.receipts.length} page{group.receipts.length === 1 ? "" : "s"}</span></h2>
       <p><span class="badge">{group.state}</span> · version {group.version} · {group.manual ? "manual grouping" : "same-minute grouping"}</p></div>
-      {group.state === "staging" && <button disabled={busy || dirtyPages.size > 0} onClick={() => act(async () => {
-        const result = await api<Reservation>(`/api/groups/${group.id}/prepare`, { version: group.version }); setReservation(result);
-      })}>Prepare approval</button>}</header>
+      {group.state === "staging" && (instantlyApprovable
+        ? <button disabled={busy || dirtyPages.size > 0} onClick={approveNow}>Approve</button>
+        : <button disabled={busy || dirtyPages.size > 0} onClick={() => act(async () => {
+          const result = await api<Reservation>(`/api/groups/${group.id}/prepare`, { version: group.version }); setReservation(result);
+        })}>Prepare approval</button>)}</header>
     <div class="pages">{group.receipts.map((receipt, index) => <div key={receipt.id}>
       {group.state === "staging" && group.receipts.length > 1 && <div class="row"><span>Page {index + 1}</span>
         <button disabled={index === 0 || busy} onClick={() => act(() => move(index, -1))}>Move up</button>
@@ -328,6 +343,7 @@ function App() {
     try { localStorage.setItem("receipt-workspace-tab", value); } catch { /* the choice applies to this visit */ }
   }
   const [sendingExport, setSendingExport] = useState("");
+  const [quickBusy, setQuickBusy] = useState(false);
   const [scanner, setScanner] = useState<any>(null);
   const [controller, setController] = useState<AbortController | null>(null);
   const [release, setRelease] = useState<(() => void) | null>(null);
@@ -437,7 +453,41 @@ function App() {
     return priority(a) - priority(b);
   });
   const exportsReady = state.groups.flatMap(group => group.exports.filter(item => item.state === "ready"));
+  const undelivered = exportsReady.filter(item => !item.drive_id);
   const activeJobs = state.jobs.filter(job => !["done"].includes(job.state));
+  const quickEligible = (group: Group) => group.state === "staging" && group.receipts.length > 0 && group.receipts.every(receipt =>
+    receipt.state === "ready" && receipt.date && receipt.time && !receipt.error && !["queued", "running"].includes(receipt.analysis?.state ?? "ready"));
+  const confirmGroups = groups.filter(group => quickEligible(group) && group.receipts.some(receipt => receipt.timestamp_review === 1));
+  const approveGroups = groups.filter(group => quickEligible(group) && group.receipts.every(receipt =>
+    !receipt.timestamp_review && receipt.field_source === "confirmed" && Boolean(receipt.complete) && Boolean(receipt.readable)));
+  const confirmPages = confirmGroups.reduce((total, group) => total + group.receipts.filter(receipt => receipt.timestamp_review === 1).length, 0);
+  async function confirmReady() {
+    const receiptIds = confirmGroups.flatMap(group => group.receipts.filter(receipt => receipt.timestamp_review === 1).map(receipt => receipt.id));
+    const dates = confirmGroups.flatMap(group => group.receipts.map(receipt => receipt.date!)).sort();
+    if (!window.confirm(`Confirm ${receiptIds.length} pages in ${confirmGroups.length} groups? This attests the physical bottom and readability for every listed page. Dates: ${dates[0]} to ${dates[dates.length - 1]}.`)) return;
+    setQuickBusy(true);
+    try {
+      const result = await api<{ confirmed: number; skipped: { id: string; reason: string }[] }>("/api/receipts/confirm-proposed", {
+        groups: Object.fromEntries(confirmGroups.map(group => [group.id, group.version])), receipt_ids: receiptIds });
+      await refresh();
+      const reasons = [...new Set(result.skipped.map(item => item.reason.replaceAll("_", " ")))];
+      setStatus(result.skipped.length ? `Confirmed ${result.confirmed} pages; skipped ${result.skipped.length} (${reasons.join(", ")}).` : `Confirmed ${result.confirmed} pages from their stored OCR proposals.`);
+    } catch (error) { setStatus(String(error)); } finally { setQuickBusy(false); }
+  }
+  async function approveAll() {
+    setQuickBusy(true);
+    let approved = 0; const failures: string[] = [];
+    for (const group of approveGroups) {
+      try {
+        const reservation = await api<Reservation>(`/api/groups/${group.id}/prepare`, { version: group.version });
+        await api(`/api/groups/${group.id}/approve`, { export_id: reservation.id, version: reservation.version });
+        approved++;
+      } catch (error) { failures.push(error instanceof Error ? error.message : String(error)); }
+    }
+    await refresh();
+    setStatus(failures.length ? `Approved ${approved} groups; ${failures.length} failed (${failures[0]}).` : `Approval queued for ${approved} groups. Originals remain until all approved artifacts are durable.`);
+    setQuickBusy(false);
+  }
   return <main class="app">
     <header class="appbar"><div><p class="eyebrow">RECEIPT WORKSPACE</p><h1>Capture. Review. Keep.</h1></div>
       <p class="status" role="status" title={status}>{status}</p>
@@ -471,7 +521,9 @@ function App() {
       </nav>
       <div class="panel" role="tabpanel" id="panel-review" aria-labelledby="tab-review" hidden={tab !== "review"}>
         <div class="toolbar"><div class="row"><button disabled={!selected.size} onClick={combine}>Make selected pages a manual group ({selected.size})</button>
-          <button class="secondary" onClick={() => setSelected(new Set())}>Clear selection</button></div></div>
+          <button class="secondary" onClick={() => setSelected(new Set())}>Clear selection</button></div>
+          <div class="row"><button disabled={quickBusy || !confirmGroups.length} onClick={confirmReady}>Confirm ready pages ({confirmPages})</button>
+            <button class="secondary" disabled={quickBusy || !approveGroups.length} onClick={approveAll}>Approve ready groups ({approveGroups.length})</button></div></div>
         {groups.map(group => <GroupCard key={group.id} group={group} selected={selected} select={(id, value) => setSelected(previous => {
           const next = new Set(previous); value ? next.add(id) : next.delete(id); return next;
         })} refresh={refresh} report={setStatus} />)}
@@ -481,7 +533,16 @@ function App() {
         <div class="row"><button disabled={connected || scanning || !state.drive.configured} onClick={async () => {
           try { const result = await api<{ url: string }>("/api/drive/connect"); location.assign(result.url); } catch (error) { setStatus(String(error)); }
         }}>{state.drive.connected ? "Reconnect Drive" : "Connect Google Drive"}</button>
-          <span class="badge">{state.drive.connected ? "Drive connected" : "Drive not connected"}</span></div>
+          <span class="badge">{state.drive.connected ? "Drive connected" : "Drive not connected"}</span>
+          {state.drive.connected && undelivered.length > 0 && <button disabled={Boolean(sendingExport)} onClick={async () => {
+            setSendingExport("all");
+            let queued = 0; const failures: string[] = [];
+            for (const item of undelivered) {
+              try { await api(`/api/exports/${item.id}/drive`); queued++; } catch (error) { failures.push(error instanceof Error ? error.message : String(error)); }
+            }
+            await refresh(); setSendingExport("");
+            setStatus(failures.length ? `Queued ${queued} approved PDFs for Drive; ${failures.length} failed (${failures[0]}).` : `Queued ${queued} approved PDFs for Drive delivery.`);
+          }}>Send approved to Drive ({undelivered.length})</button>}</div>
         {!state.drive.configured && <p class="muted">Drive is optional until OAuth credentials and the existing receipts root are configured. Approved PDFs remain downloadable.</p>}
         {exportsReady.map(item => <div class="approval" key={item.id}>
           <p><strong>{item.path}</strong></p><div class="row"><a class="button" href={`/api/exports/${item.id}/pdf`}>Download approved PDF</a>

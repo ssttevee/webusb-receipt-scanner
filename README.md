@@ -31,7 +31,7 @@ Open **http://localhost:8000** in desktop Chrome/Edge. The USB device stays on t
 
 New scans assume the current century for two-digit years. Set **Scan year century** before a session or import to change that choice. The browser retains it for later scans. Each capture records its century; printed four-digit years remain unchanged.
 
-The application creates a lossless reference master and evidence-backed date/time proposals. Supported proposals prefill staging fields; Save review confirms or corrects them before approval. Ambiguous/unsupported sources stay in review. Enhanced-master ranking and staged revisions of approved exports remain subsequent work.
+The application creates a lossless reference master and evidence-backed date/time proposals. Supported proposals prefill staging fields; Save review confirms or corrects them before approval. Ambiguous/unsupported sources stay in review. When the proposals need no changes, **Confirm ready pages** attests the physical bottom and readability for the whole batch at once after a count and date-range preview, and **Approve ready groups** queues the PDF for each confirmed group in one action. Enhanced-master ranking and staged revisions of approved exports remain subsequent work.
 
 See the [53-sample extraction baseline](docs/plans/receipt-extraction-baseline-2026-11-03.md) for measured proposal coverage, review cases and limits.
 

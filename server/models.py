@@ -79,6 +79,17 @@ class Version(Model):
     version: int = Field(gt=0)
 
 
+class ConfirmProposed(Model):
+    groups: dict[str, int] = Field(min_length=1, max_length=100)
+    receipt_ids: list[str] = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def unique_pages(self):
+        if len(set(self.receipt_ids)) != len(self.receipt_ids):
+            raise ValueError("Duplicate page selection")
+        return self
+
+
 class Membership(Model):
     groups: dict[str, int] = Field(min_length=1, max_length=100)
     receipt_ids: list[str] = Field(min_length=1, max_length=100)

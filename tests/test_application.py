@@ -345,6 +345,42 @@ def test_automatic_proposal_prefills_fields_but_cannot_confirm_itself(runtime, m
     assert prepared(client, group)["path"].endswith("20260914-1721.pdf")
 
 
+def test_batch_confirmation_accepts_proposals_and_approves_without_manual_review(runtime, monkeypatch):
+    from server.extraction import Line, extract
+    import server.worker as worker
+    client, store = runtime
+    store.settings.ocr = True
+    legible = extract([Line("2026-10-05 09:12:44", (0, 10, 500, 30), 95, "discovery"),
+                       Line("2026-10-05 09:12:44", (0, 10, 500, 30), 95, "tile-00")])
+    ambiguous = extract([Line("01/09/2022 12:21:41", (0, 10, 500, 30), 95, "discovery")])
+    results = [legible, legible, ambiguous]
+    monkeypatch.setattr(worker, "recognize", lambda *args, **kwargs: {"state": "done", "engine": "fixture", "extraction": results.pop(0)})
+    for _ in range(3):
+        capture(client, store)
+    groups = state(client)["groups"]
+    pair = next(g for g in groups if len(g["receipts"]) == 2)
+    assert all(r["field_source"] == "ocr" and r["timestamp_review"] for r in pair["receipts"])
+    rejected = client.post(f"/api/groups/{pair['id']}/prepare", json={"version": pair["version"]})
+    assert rejected.status_code == 409
+    confirmed = client.post("/api/receipts/confirm-proposed", json={
+        "groups": {g["id"]: g["version"] for g in groups},
+        "receipt_ids": [r["id"] for g in groups for r in g["receipts"]]})
+    assert confirmed.status_code == 200
+    body = confirmed.json()
+    assert body["confirmed"] == 2 and body["skipped"] == [{"id": [r["id"] for r in next(g for g in groups if len(g["receipts"]) == 1)["receipts"]][0], "reason": "no-proposal"}]
+    refreshed = state(client)["groups"]
+    pair = next(g for g in refreshed if len(g["receipts"]) == 2)
+    assert all(r["field_source"] == "confirmed" and not r["timestamp_review"] and r["complete"] and r["readable"] for r in pair["receipts"])
+    repeat = client.post("/api/receipts/confirm-proposed", json={"groups": {g["id"]: g["version"] for g in refreshed},
+        "receipt_ids": [r["id"] for r in pair["receipts"]]})
+    assert repeat.json()["confirmed"] == 0 and {item["reason"] for item in repeat.json()["skipped"]} == {"already-confirmed"}
+    assert prepared(client, pair)["path"].endswith("20261005-0912.pdf")
+    assert client.post(f"/api/groups/{pair['id']}/approve", json={"version": pair["version"], "export_id": prepared(client, pair)["id"]}).status_code == 202
+    stale = client.post("/api/receipts/confirm-proposed", json={"groups": {g["id"]: g["version"] for g in groups},
+        "receipt_ids": [r["id"] for r in pair["receipts"]]})
+    assert stale.status_code == 409
+
+
 def test_ambiguous_extraction_keeps_manual_fields_empty(runtime, monkeypatch):
     from server.extraction import Line, extract
     import server.worker as worker

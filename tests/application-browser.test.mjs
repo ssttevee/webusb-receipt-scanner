@@ -171,6 +171,34 @@ test("OCR proposals prefill editable fields, expose source strips and require ex
   }, false, true);
 });
 
+test("quick path confirms stored proposals and approves a batch without per-page review clicks", {
+  timeout: 120000, skip: spawnSync("tesseract", ["--version"]).status !== 0,
+}, async () => {
+  await environment(async ({ page, origin }) => {
+    page.on("dialog", dialog => dialog.accept());
+    const png = await page.evaluate(() => {
+      const canvas = document.createElement("canvas"); canvas.width = 640; canvas.height = 1200;
+      const context = canvas.getContext("2d"); context.fillStyle = "white"; context.fillRect(0, 0, 640, 1200);
+      context.fillStyle = "black"; context.font = "32px sans-serif";
+      context.fillText("Transaction", 30, 80); context.fillText("2026-09-14 17:21:30", 30, 150); context.fillText("BOTTOM", 30, 1150);
+      return canvas.toDataURL("image/png").split(",")[1];
+    });
+    await page.locator('input[type="file"]').setInputFiles({ name: "quick-path.png", mimeType: "image/png", buffer: Buffer.from(png, "base64") });
+    await page.waitForFunction(() => document.querySelector(".proposal strong")?.textContent.includes("OCR timestamp proposal"), null, { timeout: 30000 });
+    await page.getByRole("button", { name: /^Confirm ready pages/ }).click();
+    await page.waitForFunction(() => document.querySelector('[role="status"]').textContent.includes("Confirmed 1 pages"), null, { timeout: 15000 });
+    const confirmed = await (await fetch(`${origin}/api/state`)).json();
+    assert.equal(confirmed.groups[0].receipts[0].field_source, "confirmed");
+    assert.equal(confirmed.groups[0].receipts[0].timestamp_review, 0);
+    await page.getByRole("button", { name: /^Approve ready groups/ }).click();
+    await page.waitForFunction(() => [...document.querySelectorAll(".group .badge")].some(badge => badge.textContent === "approved"), null, { timeout: 30000 });
+    await page.getByRole("tab", { name: /^Exports/ }).click();
+    await page.getByRole("link", { name: "Download approved PDF" }).waitFor({ timeout: 30000 });
+    const quick = await (await fetch(`${origin}/api/state`)).json();
+    assert.match(quick.groups[0].exports[0].path, /2026\/09-September\/20260914-1721\.pdf/);
+  }, false, true);
+});
+
 test("fallback provenance and both source branches remain visible in staging", { timeout: 120000 }, async () => {
   await environment(async ({ page }) => {
     await page.route("**/api/receipts/*/evidence", async route => {

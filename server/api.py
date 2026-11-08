@@ -20,7 +20,7 @@ from PIL import Image
 
 from .drive import Drive
 from .analysis_jobs import current_run, ensure_run, processing_active, queue_analysis, read_evidence, run_info
-from .models import AnalysisRequest, Approval, Capture, Edit, Membership, Version
+from .models import AnalysisRequest, Approval, Capture, ConfirmProposed, Edit, Membership, Version
 from .storage import Settings, Store, digest, durable_write, encode, ensure_directory, sync_directory
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -289,6 +289,32 @@ def create_app(settings=None, drive=None):
                 shutil.rmtree(directory)
                 sync_directory(directory.parent)
         return {"deleted": True}
+
+    @app.post("/api/receipts/confirm-proposed")
+    def confirm_proposed(change: ConfirmProposed):
+        confirmed, skipped, touched = [], [], set()
+        with store.transaction() as connection:
+            for identity, version in change.groups.items():
+                group_for_edit(connection, identity, version)
+            for identity in change.receipt_ids:
+                receipt = receipt_row(connection, identity)
+                if receipt["group_id"] not in change.groups:
+                    fail("Page selection does not match the supplied group versions")
+                if receipt["state"] != "ready":
+                    skipped.append({"id": identity, "reason": "processing"}); continue
+                if not receipt["date"] or not receipt["time"]:
+                    skipped.append({"id": identity, "reason": "no-proposal"}); continue
+                if receipt["error"]:
+                    skipped.append({"id": identity, "reason": "error"}); continue
+                if (current_run(connection, receipt) or {"state": "ready"})["state"] in ("queued", "running"):
+                    skipped.append({"id": identity, "reason": "analysis-running"}); continue
+                if not receipt["timestamp_review"]:
+                    skipped.append({"id": identity, "reason": "already-confirmed"}); continue
+                connection.execute("UPDATE receipts SET complete=1, readable=1, field_source='confirmed', timestamp_review=0 WHERE id=?", (identity,))
+                if receipt["group_id"] not in touched:
+                    store.changed(connection, receipt["group_id"]); touched.add(receipt["group_id"])
+                confirmed.append({"id": identity, "group_id": receipt["group_id"]})
+        return {"confirmed": len(confirmed), "skipped": skipped, "groups": sorted(touched)}
 
     @app.post("/api/receipts/{identity}")
     def edit(identity: str, change: Edit):
