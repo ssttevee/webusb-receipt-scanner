@@ -101,6 +101,18 @@ function ReceiptEditor({ receipt, group, refresh, selected, select, report, onDi
   useEffect(() => { onDirty(receipt.id, dirty); }, [receipt.id, dirty, onDirty]);
   useEffect(() => () => onDirty(receipt.id, false), [receipt.id, onDirty]);
   const stale = baseVersion !== group.version;
+  const returnFocus = useRef<HTMLElement | null>(null);
+  function closeInspection() {
+    setInspection(false);
+    const trigger = returnFocus.current;
+    if (trigger?.isConnected) trigger.focus();
+  }
+  useEffect(() => {
+    if (!inspection) return;
+    const close = (event: KeyboardEvent) => { if (event.key === "Escape") closeInspection(); };
+    window.addEventListener("keydown", close);
+    return () => window.removeEventListener("keydown", close);
+  }, [inspection]);
   useEffect(() => {
     if (receipt.state !== "ready") return;
     if (!dirty && (!receipt.analysis || ["ready", "failed"].includes(receipt.analysis.state))) {
@@ -119,7 +131,8 @@ function ReceiptEditor({ receipt, group, refresh, selected, select, report, onDi
   async function inspect() {
     try {
       const result = await api<{ capture: { height: number }; processing: unknown }>(`/api/receipts/${receipt.id}/evidence`, undefined, "GET");
-      setHeight(result.capture.height); setEvidence(result.processing); setInspection(!inspection);
+      returnFocus.current = document.activeElement as HTMLElement | null;
+      setHeight(result.capture.height); setEvidence(result.processing); setInspection(true);
     } catch (error) { report(String(error)); }
   }
   return <article class="receipt">
@@ -139,7 +152,7 @@ function ReceiptEditor({ receipt, group, refresh, selected, select, report, onDi
           <p><code>{candidate.dates.join(" or ") || "Unresolved date"} {candidate.time || "Invalid time"}</code></p>
           {candidate.issues.length > 0 && <p class="muted">{candidate.issues.map(issue => issue.replaceAll("_", " ")).join(" · ")}</p>}
           {candidate.sources.map((source, index) => <div key={index}><pre>{source.text}</pre>
-            <button class="secondary" onClick={() => { setRow(Math.max(0, Math.min(height - 1, source.box[1] - 24))); setInspection(true); }}>Inspect source at row {source.box[1]}</button>
+            <button class="secondary" onClick={event => { returnFocus.current = event.currentTarget; setRow(Math.max(0, Math.min(height - 1, source.box[1] - 24))); setInspection(true); }}>Inspect source at row {source.box[1]}</button>
           </div>)}
         </div>)}
       </details>
@@ -154,12 +167,16 @@ function ReceiptEditor({ receipt, group, refresh, selected, select, report, onDi
       catch (error) { report(String(error)); } finally { setBusy(false); }
     }}>
       <fieldset disabled={!editable || busy || stale}>
-        <label>Transaction date<input type="date" value={date} onInput={event => { setDate(event.currentTarget.value); setDirty(true); }} /></label>
-        <label>Transaction time<input type="time" step="1" value={clock} onInput={event => { setClock(event.currentTarget.value); setDirty(true); }} /></label>
-        <label>Vendor hint (optional)<input value={vendor} maxLength={200} onInput={event => { setVendor(event.currentTarget.value); setDirty(true); }} /></label>
-        <label class="check"><input type="checkbox" checked={complete} onChange={event => { setComplete(event.currentTarget.checked); setDirty(true); }} /> Physical bottom is present</label>
-        <label class="check"><input type="checkbox" checked={readable} onChange={event => { setReadable(event.currentTarget.checked); setDirty(true); }} /> Selected image is readable</label>
-        <button type="submit">Save review</button>
+        <div class="field-grid">
+          <label>Transaction date<input type="date" value={date} onInput={event => { setDate(event.currentTarget.value); setDirty(true); }} /></label>
+          <label>Transaction time<input type="time" step="1" value={clock} onInput={event => { setClock(event.currentTarget.value); setDirty(true); }} /></label>
+          <label>Vendor hint (optional)<input value={vendor} maxLength={200} onInput={event => { setVendor(event.currentTarget.value); setDirty(true); }} /></label>
+        </div>
+        <div class="field-actions">
+          <label class="check"><input type="checkbox" checked={complete} onChange={event => { setComplete(event.currentTarget.checked); setDirty(true); }} /> Physical bottom is present</label>
+          <label class="check"><input type="checkbox" checked={readable} onChange={event => { setReadable(event.currentTarget.checked); setDirty(true); }} /> Selected image is readable</label>
+          <button type="submit">Save review</button>
+        </div>
       </fieldset>
     </form>
     {stale && editable && <p role="alert">This group changed. <button class="secondary" onClick={() => {
@@ -179,15 +196,20 @@ function ReceiptEditor({ receipt, group, refresh, selected, select, report, onDi
       finally { setBusy(false); }
     }}>Delete scan</button></p>}
 
-    {receipt.state === "ready" && <button class="secondary" onClick={inspect}>{inspection ? "Close inspection" : "Inspect full-resolution strips & OCR"}</button>}
-    {inspection && <section class="inspection">
-      <div class="row"><button disabled={row === 0} onClick={() => setRow(Math.max(0, row - 512))}>Previous strip</button>
-        <label>Starting row<input type="number" min="0" max={height - 1} value={row} onInput={event => setRow(Math.max(0, Math.min(height - 1, Number(event.currentTarget.value))))} /></label>
-        <button disabled={row + 512 >= height} onClick={() => setRow(row + 512)}>Next strip</button>
-        <button onClick={() => setRow(Math.max(0, height - 512))}>Physical bottom</button></div>
-      <div class="strip"><img src={`/api/receipts/${receipt.id}/image?top=${row}`} alt={`Full-resolution rows ${row}–${Math.min(row + 512, height)}`} /></div>
-      <details><summary>Unvalidated local OCR evidence</summary><pre>{JSON.stringify(evidence, null, 2)}</pre></details>
-    </section>}
+    {receipt.state === "ready" && <button class="secondary" onClick={inspect}>Inspect full-resolution strips & OCR</button>}
+    {inspection && <div class="inspection-overlay" role="dialog" aria-modal="true" aria-label={`Full-resolution inspection for receipt ${receipt.id.slice(0, 8)}`}
+      onClick={event => { if (event.target === event.currentTarget) closeInspection(); }}>
+      <section class="inspection-modal">
+        <header class="inspection-head"><h2>Full-resolution strips & OCR <span class="muted">page <code>{receipt.id.slice(0, 8)}</code></span></h2>
+          <button class="secondary" autofocus onClick={closeInspection}>Close inspection</button></header>
+        <div class="row"><button disabled={row === 0} onClick={() => setRow(Math.max(0, row - 512))}>Previous strip</button>
+          <label>Starting row<input type="number" min="0" max={height - 1} value={row} onInput={event => setRow(Math.max(0, Math.min(height - 1, Number(event.currentTarget.value))))} /></label>
+          <button disabled={row + 512 >= height} onClick={() => setRow(row + 512)}>Next strip</button>
+          <button onClick={() => setRow(Math.max(0, height - 512))}>Physical bottom</button></div>
+        <div class="strip"><img src={`/api/receipts/${receipt.id}/image?top=${row}`} alt={`Full-resolution rows ${row}–${Math.min(row + 512, height)}`} /></div>
+        <details><summary>Unvalidated local OCR evidence</summary><pre>{JSON.stringify(evidence, null, 2)}</pre></details>
+      </section>
+    </div>}
   </article>;
 }
 
@@ -239,9 +261,9 @@ function AnalysisControls({ receipt, group, refresh, report }: { receipt: Receip
   </section>;
 }
 
-function GroupCard({ group, selected, select, refresh, report, driveConnected }: {
+function GroupCard({ group, selected, select, refresh, report }: {
   group: Group; selected: Set<string>; select: (id: string, value: boolean) => void;
-  refresh: () => Promise<void>; report: (value: string) => void; driveConnected: boolean;
+  refresh: () => Promise<void>; report: (value: string) => void;
 }) {
   const [reservation, setReservation] = useState<Reservation | null>(null);
   const [busy, setBusy] = useState(false);
@@ -278,11 +300,6 @@ function GroupCard({ group, selected, select, refresh, report, driveConnected }:
         await api(`/api/groups/${group.id}/approve`, { export_id: reservation.id, version: reservation.version }); setReservation(null);
         report("Approval queued. Originals remain until all approved artifacts are durable.");
       })}>Approve this version</button></div>}
-    {group.exports.filter(item => item.state === "ready").map(item => <div class="approval" key={item.id}>
-      <p><strong>{item.path}</strong></p><div class="row"><a class="button" href={`/api/exports/${item.id}/pdf`}>Download approved PDF</a>
-        <button disabled={busy || !driveConnected || Boolean(item.drive_id)} onClick={() => act(async () => {
-          await api(`/api/exports/${item.id}/drive`); report("Selected approved PDF queued for Drive delivery.");
-        })}>{item.drive_id ? "Delivered to Drive" : "Send approved PDF to Drive"}</button></div></div>)}
   </section>;
 }
 
@@ -302,6 +319,15 @@ function App() {
     try { const saved = localStorage.getItem("receipt-scan-century"); return ["current", "1900", "none"].includes(saved ?? "") ? saved! : "current"; }
     catch { return "current"; }
   });
+  const [tab, setTab] = useState<"review" | "exports" | "jobs">(() => {
+    try { const saved = localStorage.getItem("receipt-workspace-tab"); return ["review", "exports", "jobs"].includes(saved ?? "") ? saved as "review" | "exports" | "jobs" : "review"; }
+    catch { return "review"; }
+  });
+  function showTab(value: "review" | "exports" | "jobs") {
+    setTab(value);
+    try { localStorage.setItem("receipt-workspace-tab", value); } catch { /* the choice applies to this visit */ }
+  }
+  const [sendingExport, setSendingExport] = useState("");
   const [scanner, setScanner] = useState<any>(null);
   const [controller, setController] = useState<AbortController | null>(null);
   const [release, setRelease] = useState<(() => void) | null>(null);
@@ -410,10 +436,13 @@ function App() {
     const priority = (group: Group) => group.state === "approved" ? 2 : group.receipts.some(r => !r.date || !r.time || !r.complete || !r.readable) ? 0 : 1;
     return priority(a) - priority(b);
   });
-  return <main>
-    <header class="title"><div><p class="eyebrow">RECEIPT WORKSPACE</p><h1>Capture. Review. Keep.</h1><p>Originals stay in staging until an approved PDF and its masters are durable.</p></div>
+  const exportsReady = state.groups.flatMap(group => group.exports.filter(item => item.state === "ready"));
+  const activeJobs = state.jobs.filter(job => !["done"].includes(job.state));
+  return <main class="app">
+    <header class="appbar"><div><p class="eyebrow">RECEIPT WORKSPACE</p><h1>Capture. Review. Keep.</h1></div>
+      <p class="status" role="status" title={status}>{status}</p>
       <span class="badge">{state.groups.filter(group => group.state === "staging").length} staging groups</span></header>
-    <section class="capture-panel"><h2>Scanner & transfer</h2><div class="row">
+    <aside class="side"><section class="capture-panel"><div class="row">
       <button onClick={connect} disabled={connected || connecting}>{connecting ? "Connecting…" : "Connect Epson scanner"}</button>
       <button onClick={scan} disabled={!connected || scanning}>Start session</button>
       <button onClick={() => { controller?.abort(); setStatus("Stop requested; waiting for the current driver operation."); }} disabled={!scanning}>Stop</button>
@@ -428,28 +457,49 @@ function App() {
         catch { setStatus("The scan century applies to this tab, but browser storage could not save it for the next visit."); }
       }}><option value="current">Current century ({Math.floor(new Date().getFullYear() / 100) * 100}–{Math.floor(new Date().getFullYear() / 100) * 100 + 99})</option>
         <option value="1900">1900–1999</option><option value="none">No assumption</option></select></label>
-      <label>Or import an unprocessed PNG (200 DPI)<input type="file" accept="image/png" onChange={event => { const file = event.currentTarget.files?.[0]; if (file) void importImage(file); event.currentTarget.value = ""; }} /></label>
+      <label class="file-import">Or import an unprocessed PNG (200 DPI)<input type="file" accept="image/png" onChange={event => { const file = event.currentTarget.files?.[0]; if (file) void importImage(file); event.currentTarget.value = ""; }} /></label>
       <div><strong>{pending} browser copies pending</strong><p><button class="secondary" onClick={resume}>Resume transfers</button></p></div></div>
       <p class="muted">The scan century applies to two-digit years on new scans and imports. This browser retains the choice. Printed four-digit years stay unchanged.</p>
       <p class="muted">Transport completion does not confirm the physical bottom. Check it during review. OCR proposes supported timestamps; Save review confirms or corrects each proposal before approval.</p>
       {diagnostics.length > 0 && <details><summary>{diagnostics.length} incomplete/fault captures retained in this browser</summary>{diagnostics.map(item => <DiagnosticDownload item={item} key={item.id} />)}</details>}
+    </section></aside>
+    <section class="work">
+      <nav class="tabs" aria-label="Workspace sections" role="tablist">
+        <button role="tab" class="tab" id="tab-review" aria-controls="panel-review" aria-selected={tab === "review"} onClick={() => showTab("review")}>Review<span class="tab-count">{groups.filter(group => group.state === "staging").length}</span></button>
+        <button role="tab" class="tab" id="tab-exports" aria-controls="panel-exports" aria-selected={tab === "exports"} onClick={() => showTab("exports")}>Exports<span class="tab-count">{exportsReady.length}</span></button>
+        <button role="tab" class="tab" id="tab-jobs" aria-controls="panel-jobs" aria-selected={tab === "jobs"} onClick={() => showTab("jobs")}>Jobs<span class="tab-count">{activeJobs.length}</span></button>
+      </nav>
+      <div class="panel" role="tabpanel" id="panel-review" aria-labelledby="tab-review" hidden={tab !== "review"}>
+        <div class="toolbar"><div class="row"><button disabled={!selected.size} onClick={combine}>Make selected pages a manual group ({selected.size})</button>
+          <button class="secondary" onClick={() => setSelected(new Set())}>Clear selection</button></div></div>
+        {groups.map(group => <GroupCard key={group.id} group={group} selected={selected} select={(id, value) => setSelected(previous => {
+          const next = new Set(previous); value ? next.add(id) : next.delete(id); return next;
+        })} refresh={refresh} report={setStatus} />)}
+        {!groups.length && <section class="empty"><h2>Your staging area is ready</h2><p>Connect the scanner or import an unprocessed image to begin.</p></section>}
+      </div>
+      <div class="panel" role="tabpanel" id="panel-exports" aria-labelledby="tab-exports" hidden={tab !== "exports"}>
+        <div class="row"><button disabled={connected || scanning || !state.drive.configured} onClick={async () => {
+          try { const result = await api<{ url: string }>("/api/drive/connect"); location.assign(result.url); } catch (error) { setStatus(String(error)); }
+        }}>{state.drive.connected ? "Reconnect Drive" : "Connect Google Drive"}</button>
+          <span class="badge">{state.drive.connected ? "Drive connected" : "Drive not connected"}</span></div>
+        {!state.drive.configured && <p class="muted">Drive is optional until OAuth credentials and the existing receipts root are configured. Approved PDFs remain downloadable.</p>}
+        {exportsReady.map(item => <div class="approval" key={item.id}>
+          <p><strong>{item.path}</strong></p><div class="row"><a class="button" href={`/api/exports/${item.id}/pdf`}>Download approved PDF</a>
+            <button disabled={Boolean(sendingExport) || !state.drive.connected || Boolean(item.drive_id)} onClick={async () => {
+              setSendingExport(item.id);
+              try { await api(`/api/exports/${item.id}/drive`); await refresh(); setStatus("Selected approved PDF queued for Drive delivery."); }
+              catch (error) { setStatus(String(error)); } finally { setSendingExport(""); }
+            }}>{item.drive_id ? "Delivered to Drive" : "Send approved PDF to Drive"}</button></div></div>)}
+        {!exportsReady.length && <section class="empty"><h2>No approved exports yet</h2><p>Approve a staging group to produce its PDF.</p></section>}
+      </div>
+      <div class="panel jobs" role="tabpanel" id="panel-jobs" aria-labelledby="tab-jobs" hidden={tab !== "jobs"}>
+        <p class="muted">{activeJobs.length} pending/failed of {state.jobs.length} recorded jobs.</p>
+        {state.jobs.map(job => <p key={job.id}><code>{job.kind} · {job.target.slice(0, 8)}</code> — {job.state}{job.error && `: ${job.error}`} {job.state === "failed" && <button onClick={async () => {
+          try { await api(`/api/jobs/${job.id}/retry`); await refresh(); } catch (error) { setStatus(String(error)); }
+        }}>Retry</button>}</p>)}
+        {!state.jobs.length && <section class="empty"><h2>No background jobs recorded</h2><p>Processing and delivery jobs appear here.</p></section>}
+      </div>
     </section>
-    <p class="status" role="status">{status}</p>
-    <section class="toolbar"><div class="row"><button disabled={!selected.size} onClick={combine}>Make selected pages a manual group ({selected.size})</button>
-      <button class="secondary" onClick={() => setSelected(new Set())}>Clear selection</button></div>
-      <button disabled={connected || scanning || !state.drive.configured} onClick={async () => {
-        try { const result = await api<{ url: string }>("/api/drive/connect"); location.assign(result.url); } catch (error) { setStatus(String(error)); }
-      }}>{state.drive.connected ? "Reconnect Drive" : "Connect Google Drive"}</button>
-    </section>
-    {!state.drive.configured && <p class="muted">Drive is optional until OAuth credentials and the existing receipts root are configured. Approved PDFs remain downloadable.</p>}
-    {groups.map(group => <GroupCard key={group.id} group={group} selected={selected} select={(id, value) => setSelected(previous => {
-      const next = new Set(previous); value ? next.add(id) : next.delete(id); return next;
-    })} refresh={refresh} report={setStatus} driveConnected={state.drive.connected} />)}
-    {!groups.length && <section class="empty"><h2>Your staging area is ready</h2><p>Connect the scanner or import an unprocessed image to begin.</p></section>}
-    <details class="jobs"><summary>Background jobs ({state.jobs.filter(job => !["done"].includes(job.state)).length} pending/failed)</summary>
-      {state.jobs.map(job => <p key={job.id}><code>{job.kind} · {job.target.slice(0, 8)}</code> — {job.state}{job.error && `: ${job.error}`} {job.state === "failed" && <button onClick={async () => {
-        try { await api(`/api/jobs/${job.id}/retry`); await refresh(); } catch (error) { setStatus(String(error)); }
-      }}>Retry</button>}</p>)}</details>
   </main>;
 }
 

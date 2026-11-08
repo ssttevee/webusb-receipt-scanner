@@ -90,6 +90,7 @@ test("browser queue survives a lost acknowledgment and reload, then review/appro
     await page.getByRole("button", { name: "Inspect full-resolution strips & OCR" }).click();
     await page.getByRole("button", { name: "Physical bottom", exact: true }).click();
     await page.waitForFunction(() => document.querySelector(".strip img")?.complete && document.querySelector(".strip img").naturalWidth === 640);
+    await page.getByRole("button", { name: "Close inspection", exact: true }).click();
     await page.getByRole("button", { name: "Prepare approval", exact: true }).click();
     await page.getByRole("button", { name: "Approve this version", exact: true }).waitFor();
     assert.match(await page.locator(".approval").textContent(), /2026\/09-September\/20260914-1721.pdf/);
@@ -103,6 +104,7 @@ test("browser queue survives a lost acknowledgment and reload, then review/appro
     await page.getByRole("button", { name: "Approve this version", exact: true }).waitFor();
     assert.match(await page.locator(".approval").textContent(), /2026\/09-September\/20260914-1722.pdf/);
     await page.getByRole("button", { name: "Approve this version", exact: true }).click();
+    await page.getByRole("tab", { name: /^Exports/ }).click();
     await page.getByRole("link", { name: "Download approved PDF" }).waitFor({ timeout: 30000 });
     const downloading = page.waitForEvent("download");
     await page.getByRole("link", { name: "Download approved PDF" }).click();
@@ -111,7 +113,8 @@ test("browser queue survives a lost acknowledgment and reload, then review/appro
     const saved = join(directory, "approved.pdf");
     await download.saveAs(saved);
     assert.equal((await readFile(saved)).subarray(0, 4).toString(), "%PDF");
-    await page.screenshot({ path: join(process.env.APP_TEST_ARTIFACTS || directory, "workspace.png"), fullPage: true });
+    await page.getByRole("tab", { name: /^Review/ }).click();
+    await page.locator("#panel-review").screenshot({ path: join(process.env.APP_TEST_ARTIFACTS || directory, "workspace.png") });
   });
 });
 
@@ -155,6 +158,7 @@ test("OCR proposals prefill editable fields, expose source strips and require ex
     await page.locator(".proposal summary").click();
     await page.getByRole("button", { name: /Inspect source at row/ }).first().click();
     await page.waitForFunction(() => document.querySelector(".strip img")?.complete && document.querySelector(".strip img").naturalWidth === 640);
+    await page.getByRole("button", { name: "Close inspection", exact: true }).click();
     const before = await (await fetch(`${origin}/api/state`)).json();
     assert.equal(before.groups[0].receipts[0].timestamp_review, 1);
     await page.getByLabel("Physical bottom is present").check();
@@ -195,6 +199,7 @@ test("fallback provenance and both source branches remain visible in staging", {
     assert.equal(await page.locator(".candidate script").count(), 0);
     await page.getByRole("button", { name: "Inspect source at row 100", exact: true }).last().click();
     await page.waitForFunction(() => document.querySelector(".strip img")?.complete && document.querySelector(".strip img").naturalWidth === 320);
+    await page.getByRole("button", { name: "Close inspection", exact: true }).click();
   });
 });
 
