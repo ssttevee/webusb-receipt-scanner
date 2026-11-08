@@ -146,12 +146,16 @@ def test_approval_pdf_cleanup_and_idempotence(runtime):
     assert client.post(f"/api/groups/{group['id']}/approve", json=request).status_code == 202
     pdf = client.get(f"/api/exports/{export['id']}/pdf")
     assert pdf.status_code == 200 and pdf.content.startswith(b"%PDF")
+    assert b"/CCITTFaxDecode" in pdf.content
     assert not (store.settings.work / "captures" / manifest["id"] / "original.bin").exists()
     assert client.get(f"/api/receipts/{manifest['id']}/image?top=0").status_code == 200
     archived = json.loads((store.settings.archive / ".exports" / export["id"] / "manifest.json").read_text())
     with Image.open(archived["masters"][0]["path"]) as image:
-        assert image.size == (20, 160)
+        assert image.size == (20, 160) and image.mode != "1"
         assert image.info["dpi"] == (200, 200)
+    with Image.open(archived["enhanced"][0]["path"]) as image:
+        assert image.mode == "1" and image.size == (19, 160)  # striped scan ends on a dark edge column
+        assert image.info["compression"] == "group4"
 
 
 def test_collision_reservations_preserve_existing_files(runtime):

@@ -14,6 +14,7 @@ from PIL import Image
 
 from .drive import Drive
 from .analysis_jobs import ensure_run, owns_job, read_evidence
+from .enhance import enhanced_page
 from .extraction import VERSION as EXTRACTOR_VERSION
 from .recognition import recognize
 from .storage import Settings, Store, digest, durable_write, encode, sync_directory
@@ -181,6 +182,7 @@ def finalize_export(store, identity):
     else:
         masters = []
         pages = []
+        enhanced = []
         for receipt in snapshot["receipts"]:
             source = Path(receipt["master"])
             expected = json.loads(receipt["evidence"])["master_sha256"]
@@ -189,12 +191,15 @@ def finalize_export(store, identity):
             target = directory / f"{receipt['id']}.tiff"
             durable_write(target, source.read_bytes())
             masters.append({"receipt_id": receipt["id"], "path": str(target), "sha256": expected})
-            pages.append(str(target))
+            page = directory / f"{receipt['id']}-enhanced.tif"
+            durable_write(page, enhanced_page(source))
+            enhanced.append({"receipt_id": receipt["id"], "path": str(page), "sha256": digest(page)})
+            pages.append(str(page))
         pdf = img2pdf.convert(pages)
         durable_write(document, pdf)
         checksum = digest(document)
         manifest = {"id": identity, "path": export["path"], "sha256": checksum,
-                    "snapshot": snapshot, "masters": masters}
+                    "snapshot": snapshot, "masters": masters, "enhanced": enhanced}
         durable_write(manifest_path, encode(manifest).encode())
     destination = settings.archive / export["path"]
     try:

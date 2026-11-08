@@ -170,11 +170,12 @@ def main():
         with pikepdf.open(io.BytesIO(pdf)) as document:
             assert len(document.pages) == 1
             box = document.pages[0].MediaBox
-            assert abs(float(box[2]) - manifest["width"] * 72 / manifest["dpi_x"]) < 0.1
-            assert abs(float(box[3]) - manifest["height"] * 72 / manifest["dpi_y"]) < 0.1
-            if args.bundle:
-                pixels = pikepdf.PdfImage(next(iter(document.pages[0].images.values()))).as_pil_image().convert("RGB").tobytes()
-                assert hashlib.sha256(pixels).hexdigest() == checksum
+            page_width, page_height = float(box[2]) - float(box[0]), float(box[3]) - float(box[1])
+            assert 0 < page_width <= manifest["width"] * 72 / manifest["dpi_x"] + 0.1
+            assert 0 < page_height <= manifest["height"] * 72 / manifest["dpi_y"] + 0.1
+            image = pikepdf.PdfImage(next(iter(document.pages[0].images.values())))
+            assert "CCITTFaxDecode" in str(image.obj["/Filter"])
+            assert image.pil_mode == "1" or image.bits_per_component == 1
         docker("stop", "-t", "25", name)
         docker("rm", name)
         start()
@@ -182,7 +183,7 @@ def main():
         assert request("GET", "/api/state")["groups"][0]["state"] == "approved"
         print("PASS: amd64 container, five OCR packs, chunk resume after recreation, OCR evidence, manual review, approval, physical PDF size, cleanup and approved artifact recovery.")
         if args.bundle:
-            print("PASS: embedded real receipt PDF pixels exactly match the original raw SHA-256.")
+            print("PASS: embedded real receipt PDF page is a bilevel CCITT enhancement within the original bounds.")
         if args.reprocess_mode:
             print("PASS: explicit receipt convention, durable reanalysis, immutable history and unconfirmed proposal before manual approval.")
     finally:

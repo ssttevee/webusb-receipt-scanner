@@ -126,7 +126,7 @@ npm run test:scanner-browser
 .venv/bin/python scripts/check-container.py --image receipt-scanner:dev
 ```
 
-`scripts/check-container.py --bundle .receipt-samples/sample-{uuid}.zip` also tests a private real raw sample. It creates isolated uniquely named containers/volumes, recreates the container during an interrupted upload and after approval, checks the five OCR packs, and verifies embedded PDF RGB pixels against the original. Test volumes are removed afterward; source bundles remain unchanged. This checks durability/pixel preservation, not extraction accuracy or NAS throughput.
+`scripts/check-container.py --bundle .receipt-samples/sample-{uuid}.zip` also tests a private real raw sample. It creates isolated uniquely named containers/volumes, recreates the container during an interrupted upload and after approval, checks the five OCR packs, and verifies the embedded PDF page is a bilevel CCITT enhancement within the original bounds. Test volumes are removed afterward; source bundles remain unchanged. This checks durability and enhancement bounds, not extraction accuracy or NAS throughput.
 
 - **Pending transfer:** reconnect/authenticate and Resume transfers; reload also resumes. Keep site storage while copies are pending.
 - **Scanner fault:** partial bytes/diagnostics remain downloadable. Stop waits cooperatively for the current driver operation; disconnect/reconnect when recovery is requested.
@@ -137,7 +137,7 @@ npm run test:scanner-browser
 
 ## Verification snapshot
 
-Backend fault-path tests and browser end-to-end checks cover lost acknowledgment/reload and production-UI capture through the compiled driver against simulated Epson USB. The amd64 image builds and passes isolated recreation/OCR/approval/PDF checks with a real approximately 881 mm capture, whose embedded pixels match the raw original. Physical USB lifecycle, approximately 1,000 mm real capture, NAS throughput, live OAuth and the broader RA acceptance matrix remain hands-on/follow-up checks.
+Backend fault-path tests and browser end-to-end checks cover lost acknowledgment/reload and production-UI capture through the compiled driver against simulated Epson USB. The amd64 image builds and passes isolated recreation/OCR/approval/PDF checks with a real approximately 881 mm capture, whose embedded page is a bilevel enhancement within the original bounds. Physical USB lifecycle, approximately 1,000 mm real capture, NAS throughput, live OAuth and the broader RA acceptance matrix remain hands-on/follow-up checks.
 
 The [extraction baseline](plans/receipt-extraction-baseline-2026-11-03.md) records corpus measurements and the repeatable benchmark command. The browser suite includes a native Tesseract proposal/source-strip check when Tesseract is installed. Python checks cover parser edge cases, proposal confirmation, automatic grouping, schema migration, stale approval, deletion and recovery. No live Drive account or external model was contacted.
 
