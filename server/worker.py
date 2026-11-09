@@ -1,9 +1,11 @@
 """Lease-backed, restartable processing, approval and delivery jobs."""
+import hashlib
 import io
 import json
 import os
 from pathlib import Path
 import signal
+import subprocess
 import threading
 import time
 import uuid
@@ -14,9 +16,10 @@ from PIL import Image
 
 from .drive import Drive
 from .analysis_jobs import ensure_run, owns_job, read_evidence
+from .binarize import RECIPES, VERSION as BINARIZE_VERSION, apply_recipe, png as recipe_png
 from .enhance import enhanced_page
-from .extraction import VERSION as EXTRACTOR_VERSION
-from .recognition import recognize
+from .extraction import VERSION as EXTRACTOR_VERSION, dates, times
+from .recognition import lines_from_tsv, recognize
 from .storage import Settings, Store, digest, durable_write, encode, sync_directory
 
 Image.MAX_IMAGE_PIXELS = 160000000
@@ -99,6 +102,66 @@ def process(store, identity, ocr_backend=None, fallback=None, job=None):
     analyze(store, run["id"], ocr_backend, fallback, job)
 
 
+def stamp_region(evidence):
+    """The printed timestamp region a binarization ranking should measure, in master pixels:
+    the union of the source lines behind the proposed (or first) timestamp candidate."""
+    extraction = evidence.get("extraction") or {}
+    candidates = extraction.get("candidates") or []
+    if not candidates:
+        return None
+    selected = extraction.get("selected") or {}
+    chosen = next((candidate for candidate in candidates if candidate.get("id") == selected.get("candidate_id")), candidates[0])
+    boxes = [source["box"] for source in chosen.get("sources", []) if len(source.get("box") or ()) == 4]
+    if not boxes:
+        return None
+    return [min(box[0] for box in boxes), min(box[1] for box in boxes),
+            max(box[2] for box in boxes), max(box[3] for box in boxes)]
+
+
+def rank_binarization(receipt, capture, evidence):
+    """RA-11: read this page's printed timestamp region once per recipe and score the reads, so
+    the operator can see which processing surfaced the stamp and choose it. It measures only —
+    no timestamp, legibility or field anywhere is written from these numbers."""
+    region = stamp_region(evidence)
+    if not region:
+        return None
+    with Image.open(receipt["master"]) as master:
+        master = master.convert("L")
+        margin = max(6, (region[3] - region[1]) // 3)  # stamps are often clipped by their own candidate box
+        region = (max(0, region[0] - margin), max(0, region[1] - margin),
+                  min(master.width, region[2] + margin), min(master.height, region[3] + margin))
+        gray = np.asarray(master.crop(region), dtype=np.uint8)
+    if gray.shape[1] < 24 or gray.shape[0] < 12:
+        return None
+    profile = [language for language in capture["languages"] if language in ("eng", "fra", "jpn", "chi_tra", "chi_sim")] or ["eng"]
+    results = []
+    for key, recipe in RECIPES.items():  # reference is listed first; a stable sort keeps it first on exact ties
+        pixels = recipe_png(apply_recipe(key, gray))
+        process = subprocess.run(["tesseract", "stdin", "stdout", "--dpi", "200", "-l", "+".join(profile),
+                                  "--psm", "6", "tsv"], input=pixels, capture_output=True, timeout=20,
+                                 env={**os.environ, "OMP_THREAD_LIMIT": "2"})
+        if process.returncode:
+            raise ValueError(f"binarization read failed: {process.stderr.decode('utf-8', 'replace')[:200]}")
+        lines = lines_from_tsv(process.stdout.decode("utf-8", "replace"), f"binarize-{key}")
+        characters = sum(len(line.text) for line in lines)
+        weighted = sum(line.confidence * len(line.text) for line in lines) / characters if characters else 0.0
+        date_values, time_values = [], []
+        for line in lines:
+            found_dates = dates(line.text)
+            date_values.extend(value for item in found_dates for value in item["values"])
+            time_values.extend(item["value"] for item in times(line.text, [item["span"] for item in found_dates]) if item["value"])
+        results.append({"key": key, "label": recipe["label"], "sha256": hashlib.sha256(pixels).hexdigest(),
+                        "characters": characters, "confidence": round(weighted, 2),
+                        "timestamp_read": {"date": date_values[0] if date_values else None,
+                                           "time": time_values[0] if time_values else None}})
+    results.sort(key=lambda item: (
+        item["timestamp_read"]["date"] is None or item["timestamp_read"]["time"] is None,
+        item["timestamp_read"]["date"] is None and item["timestamp_read"]["time"] is None,
+        -item["confidence"], -item["characters"]))
+    return {"version": BINARIZE_VERSION, "region": [int(value) for value in region],
+            "results": results, "selected": results[0]["key"]}
+
+
 def analyze(store, run_id, ocr_backend=None, fallback=None, job=None):
     with store.transaction() as connection:
         run = connection.execute("SELECT * FROM analysis_runs WHERE id=?", (run_id,)).fetchone()
@@ -129,7 +192,7 @@ def analyze(store, run_id, ocr_backend=None, fallback=None, job=None):
             continue
         saved = json.loads(candidate.read_text())
         metadata = saved.get("analysis", {})
-        if metadata.get("id") == run_id and metadata.get("policy") == policy and metadata.get("extractor") == EXTRACTOR_VERSION and saved.get("master_sha256") == master_sha:
+        if metadata.get("id") == run_id and metadata.get("policy") == policy and metadata.get("extractor") == EXTRACTOR_VERSION and metadata.get("binarization") == BINARIZE_VERSION and saved.get("master_sha256") == master_sha:
             evidence, path = saved, candidate
             break
     if evidence is None:
@@ -138,6 +201,8 @@ def analyze(store, run_id, ocr_backend=None, fallback=None, job=None):
             from .reanalysis import reparse_ocr
             prior = read_evidence(base)
             evidence["ocr"] = reparse_ocr(prior["ocr"], policy["effective"])
+            if prior.get("binarization"):
+                evidence["binarization"] = prior["binarization"]  # a re-parse must not quietly drop the measured reads
         elif store.settings.ocr:
             ocr_started = time.monotonic()
             with Image.open(receipt["master"]) as image:
@@ -154,7 +219,17 @@ def analyze(store, run_id, ocr_backend=None, fallback=None, job=None):
         if evidence["ocr"] is not None:
             evidence["extraction"] = evidence["ocr"].pop("extraction")
             evidence["date_time_source"] = evidence["extraction"]["version"]
-        evidence["analysis"] = {"id": run_id, "version": run["version"], "mode": run["mode"], "policy": policy, "extractor": EXTRACTOR_VERSION}
+            if run["mode"] == "ocr":
+                try:
+                    ranking = rank_binarization(receipt, capture, evidence)
+                except Exception as error:
+                    # The ranking is a convenience for the operator; it must never fail the analysis.
+                    evidence["binarization_error"] = str(error)[:300]
+                    ranking = None
+                if ranking:
+                    evidence["binarization"] = ranking
+        evidence["analysis"] = {"id": run_id, "version": run["version"], "mode": run["mode"], "policy": policy,
+                                "extractor": EXTRACTOR_VERSION, "binarization": BINARIZE_VERSION}
         path = output / "evidence.json"
         durable_write(path, encode(evidence).encode())
         durable_write(path.with_suffix(".sha256"), digest(path).encode())
@@ -221,7 +296,7 @@ def finalize_export(store, identity):
             durable_write(target, source.read_bytes())
             masters.append({"receipt_id": receipt["id"], "path": str(target), "sha256": expected})
             page = directory / f"{receipt['id']}-enhanced.tif"
-            durable_write(page, enhanced_page(source))
+            durable_write(page, enhanced_page(source, recipe=receipt.get("binarization") or "sauvola"))
             enhanced.append({"receipt_id": receipt["id"], "path": str(page), "sha256": digest(page)})
             pages.append(str(page))
         pdf = img2pdf.convert(pages)

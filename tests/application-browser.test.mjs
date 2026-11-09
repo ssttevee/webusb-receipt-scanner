@@ -164,7 +164,7 @@ test("OCR proposals prefill editable fields, expose source strips and require ex
     await page.waitForFunction(() => document.querySelector(".proposal strong")?.textContent.includes("OCR timestamp proposal"), null, { timeout: 30000 });
     assert.equal(await page.getByLabel("Transaction date", { exact: true }).inputValue(), "2026-09-14");
     assert.equal(await page.getByLabel("Transaction time", { exact: true }).inputValue(), "17:21:30");
-    await page.locator(".proposal summary").click();
+    await page.locator(".proposal .candidates > summary").click();
     await page.getByRole("button", { name: /Inspect source at row/ }).first().click();
     await page.waitForFunction(() => document.querySelector(".strip img")?.complete && document.querySelector(".strip img").naturalWidth === 640);
     await page.getByRole("button", { name: "Close inspection", exact: true }).click();
@@ -309,7 +309,7 @@ test("fallback provenance and both source branches remain visible in staging", {
     await openEditor(page);
     await page.getByText("RapidOCR fallback supplied this proposal. Inspect both engine source lists.", { exact: true }).waitFor();
     assert.match(await page.locator(".proposal").textContent(), /Primary OCR: ocr disagreement/);
-    await page.locator(".proposal summary").click();
+    await page.locator(".proposal .candidates > summary").click();
     assert.equal(await page.locator(".candidate").count(), 2);
     assert.equal(await page.locator(".candidate script").count(), 0);
     await page.getByRole("button", { name: "Inspect source at row 100", exact: true }).last().click();
@@ -683,6 +683,53 @@ test("the details dialog can re-read a wider stamp window and offer exactly what
     await page.getByRole("button", { name: "Save review" }).first().click();
     await page.waitForFunction(() => ![...document.querySelectorAll(".editor p.muted")]
       .some(p => p.textContent.includes("Save or reload local field edits")), null, { timeout: 30000 });
+  }, false, true);
+});
+
+test("the details dialog ranks stamp processing and lets the operator choose it", {
+  timeout: 120000, skip: spawnSync("tesseract", ["--version"]).status !== 0,
+}, async () => {
+  await environment(async ({ page }) => {
+    const png = await page.evaluate(() => {
+      const canvas = document.createElement("canvas"); canvas.width = 640; canvas.height = 1200;
+      const context = canvas.getContext("2d"); context.fillStyle = "white"; context.fillRect(0, 0, 640, 1200);
+      context.fillStyle = "black"; context.font = "32px sans-serif";
+      context.fillText("Transaction", 30, 80); context.fillText("2026-09-14 17:21:30", 30, 150);
+      context.fillText("THANK YOU", 30, 1150);
+      return canvas.toDataURL("image/png").split(",")[1];
+    });
+    await page.locator('input[type="file"]').setInputFiles({ name: "variants.png", mimeType: "image/png", buffer: Buffer.from(png, "base64") });
+    await page.waitForFunction(() => document.querySelector(".cell .stamp-date")?.value === "2026-09-14", null, { timeout: 90000 });
+    await openEditor(page);
+    await page.waitForSelector(".variant-list li", { timeout: 30000 });
+    await page.waitForFunction(() => document.querySelectorAll(".variant-list li").length === 4
+      && [...document.querySelectorAll(".variant-list img")].every(image => image.complete && image.naturalWidth > 0), null, { timeout: 30000 });
+    const rows = await page.evaluate(() => [...document.querySelectorAll(".variant-list li")].map(li => ({
+      label: li.querySelector("strong").textContent,
+      read: li.querySelector("p.muted").textContent,
+      rendered: (() => { const image = li.querySelector("img"); return image.complete && image.naturalWidth > 0; })(),
+      inUse: li.textContent.includes("in use"),
+      pick: li.textContent.includes("machine's pick"),
+    })));
+    assert.equal(rows.length, 4, "every recipe the analysis measured must be offered for choice");
+    assert(rows.every(row => row.rendered), "each ranked recipe must render its crop beside the numbers");
+    assert(rows.some(row => row.read.includes("2026-09-14") && row.read.includes("17:21:30")),
+      `the reads must show what OCR found: ${rows.map(row => row.read).join(" | ")}`);
+    assert.equal(rows.filter(row => row.inUse).length, 1, "exactly one recipe is in use before the operator says otherwise");
+    assert(rows.some(row => row.pick));
+    const machinePick = rows.findIndex(row => row.pick);
+    const operatorChoice = rows.findIndex((_, index) => index !== machinePick);
+    await page.locator(".variant-list li").nth(operatorChoice).getByRole("button", { name: "Use this" }).click();
+    await page.waitForFunction(index => {
+      const li = [...document.querySelectorAll(".variant-list li")][index];
+      return li && li.textContent.includes("in use") && li.querySelector("button:not([disabled])")?.textContent === "Let the machine choose";
+    }, operatorChoice, { timeout: 30000 });
+    // Handing the choice back undoes it exactly: the machine's ranked first place is in use again.
+    await page.getByRole("button", { name: "Let the machine choose" }).click();
+    await page.waitForFunction(index => {
+      const li = [...document.querySelectorAll(".variant-list li")][index];
+      return li && li.textContent.includes("in use") && !li.textContent.includes("Let the machine choose");
+    }, machinePick, { timeout: 30000 });
   }, false, true);
 });
 

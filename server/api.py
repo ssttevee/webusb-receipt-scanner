@@ -22,8 +22,9 @@ from PIL import Image
 
 from .drive import Drive
 from .analysis_jobs import current_run, ensure_run, processing_active, queue_analysis, read_evidence, run_info
+from .binarize import apply_recipe, png as recipe_png
 from .extraction import dates, times
-from .models import AnalysisRequest, Approval, Attest, Capture, ConfirmProposed, Edit, Membership, Recrop, Stamp, Version
+from .models import AnalysisRequest, Approval, Attest, Binarization, Capture, ConfirmProposed, Edit, Membership, Recrop, Stamp, Version
 from .storage import Settings, Store, digest, durable_write, encode, ensure_directory, sync_directory
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -319,6 +320,45 @@ def create_app(settings=None, drive=None):
                           "times": [{"raw": item["raw"], "value": item["value"], "issues": item["issues"]}
                                     for item in found_times]})
         return {"lines": lines}
+
+    @app.get("/api/receipts/{identity}/stamp-variant")
+    def stamp_variant(identity: str, variant: str = ""):
+        # The measured stamp region rendered through one of its recipes, for preview before the
+        # operator commits to one. Only variants this page's own ranking produced can be drawn.
+        with store.transaction() as connection:
+            receipt = receipt_row(connection, identity)
+        evidence = json.loads(receipt["evidence"]) if receipt["evidence"] else {}
+        ranking = evidence.get("binarization")
+        if not ranking or not receipt["master"]:
+            fail("This page has no binarization candidates", 404)
+        if variant not in [item["key"] for item in ranking["results"]]:
+            fail("That variant was not measured for this page", 422)
+        with Image.open(receipt["master"]) as master:
+            crop = np.asarray(master.convert("L").crop(tuple(ranking["region"])), dtype=np.uint8)
+        return Response(recipe_png(apply_recipe(variant, crop)), media_type="image/png")
+
+    @app.post("/api/receipts/{identity}/binarization")
+    def choose_binarization(identity: str, change: Binarization):
+        # The operator's choice of stamp processing for this page. Like every ruling it is final in
+        # both directions - it can override the machine's winner and hand the choice back (default)
+        # - and like every preview it decides nothing about timestamps: it only records the choice,
+        # which the preview strips and the approved export then honour.
+        with store.transaction() as connection:
+            receipt = receipt_row(connection, identity)
+            group = group_for_edit(connection, receipt["group_id"], change.version)
+            if receipt["state"] != "ready":
+                fail("Wait for image processing before reviewing")
+            evidence = json.loads(receipt["evidence"]) if receipt["evidence"] else {}
+            ranking = evidence.get("binarization")
+            if not ranking:
+                fail("This page has no binarization candidates", 409)
+            if change.variant != "default" and not any(item["key"] == change.variant for item in ranking["results"]):
+                fail("That variant was not measured for this page", 422)
+            connection.execute("UPDATE receipts SET binarization=? WHERE id=?",
+                               (None if change.variant == "default" else change.variant, identity))
+            store.changed(connection, group["id"])
+            version = store.group(connection, group["id"])["version"]
+        return {"saved": True, "variant": None if change.variant == "default" else change.variant, "version": version}
 
     # ...and the candidates as text, so a Review row can show what each pass printed and start its
     # form from the half the OCR did read. Cheap: one stored JSON document already in the row.

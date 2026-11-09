@@ -106,6 +106,12 @@ class Recrop(Model):
     expand: float = Field(default=0.25, ge=0.0, le=1.0)
 
 
+class Binarization(Model):
+    # "default" hands the choice back to the machine's own ranking.
+    variant: Literal["reference", "stretched", "otsu", "sauvola", "default"]
+    version: int
+
+
 class ConfirmProposed(Model):
     groups: dict[str, int] = Field(min_length=1, max_length=100)
     receipt_ids: list[str] = Field(min_length=1, max_length=500)

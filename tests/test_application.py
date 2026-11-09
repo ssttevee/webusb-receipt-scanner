@@ -1,4 +1,5 @@
 import hashlib
+import shutil
 import io
 import json
 import time
@@ -66,7 +67,7 @@ def test_origin_boundary_and_incomplete_rejection(runtime):
     assert client.post("/api/captures", json={}, headers={"Origin": "https://outside.example"}).status_code == 403
     assert client.get("/api/health", headers={"Host": "outside.example"}).status_code == 403
     # Health reports the database's own ladder value, so the two can never disagree.
-    assert client.get("/api/health").json()["schema"] == 4
+    assert client.get("/api/health").json()["schema"] == 5
     assert client.get("/").headers["Cross-Origin-Embedder-Policy"] == "require-corp"
     oversized = client.post("/api/captures", content=b"x" * (1048576 + 1))
     assert oversized.status_code == 413
@@ -734,7 +735,8 @@ def test_schema_one_migration_preserves_manual_timestamps(tmp_path):
     connection.close()
     store = Store(settings)
     with store.transaction() as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
+        assert "binarization" in [row[1] for row in connection.execute("PRAGMA table_info(receipts)")]
         manual = dict(connection.execute("SELECT * FROM receipts WHERE id='manual'").fetchone())
         assert manual["date"] == "2021-12-21" and manual["time"] == "12:45:42"
         assert manual["field_source"] == "manual" and manual["timestamp_review"] == 0
@@ -784,3 +786,96 @@ def test_worker_fallback_timeout_retains_staging_and_manual_review(runtime, monk
     assert receipt["state"] == "ready" and receipt["date"] is None and receipt["time"] is None
     assert (store.settings.work / "captures" / manifest["id"] / "original.bin").read_bytes() == original
     assert review(client, manifest["id"]).status_code == 200
+
+
+def test_binarization_recipes_are_pure_bounded_and_never_invent_ink():
+    import numpy as np
+    from server.binarize import apply_recipe, png
+    gray = np.linspace(20, 235, 64 * 64, dtype=np.uint8).reshape(64, 64)
+    assert (apply_recipe("reference", gray) == gray).all()  # the ranking always measures against the print itself
+    for key in ("stretched", "otsu", "sauvola"):
+        first = apply_recipe(key, gray)
+        assert first.shape == gray.shape and first.dtype == np.uint8
+        assert (apply_recipe(key, gray) == first).all()  # deterministic: a preview equals what was ranked
+        assert png(first) == png(apply_recipe(key, gray))
+    for key in ("otsu", "sauvola"):
+        assert set(np.unique(apply_recipe(key, gray))) <= {0, 255}
+    blank = np.full((40, 40), 200, dtype=np.uint8)
+    assert (apply_recipe("stretched", blank) == blank).all()  # a blank crop must not be stretched into fake ink
+
+
+def test_stamp_region_follows_the_selected_candidate_and_falls_back_to_the_first():
+    from server.worker import stamp_region
+    candidates = [{"id": "a", "sources": [{"box": [10, 10, 50, 20]}]}, {"id": "b", "sources": [{"box": [30, 40, 80, 60]}]}]
+    assert stamp_region({"extraction": {"candidates": candidates, "selected": {"candidate_id": "b"}}}) == [30, 40, 80, 60]
+    assert stamp_region({"extraction": {"candidates": candidates}}) == [10, 10, 50, 20]
+    assert stamp_region({"extraction": {"candidates": []}}) is None
+
+
+@pytest.mark.skipif(shutil.which("tesseract") is None, reason="requires the OCR command line")
+def test_rank_binarization_reads_the_stamp_under_every_recipe_and_ranks_the_reads(tmp_path):
+    from PIL import ImageDraw, ImageFont
+    from server.worker import rank_binarization
+    canvas = Image.new("L", (640, 120), 255)
+    ImageDraw.Draw(canvas).text((20, 22), "2026-09-14 17:21:30", fill=0, font=ImageFont.load_default(size=28))
+    master = tmp_path / "master.png"
+    canvas.save(master)
+    evidence = {"extraction": {"candidates": [{"id": "c", "sources": [{"box": [15, 20, 330, 50]}]}], "selected": {"candidate_id": "c"}}}
+    ranking = rank_binarization({"master": str(master)}, {"languages": ["eng"]}, evidence)
+    assert ranking["version"] == "binarize-candidates-v1"
+    assert {item["key"] for item in ranking["results"]} == {"reference", "stretched", "otsu", "sauvola"}
+    assert ranking["region"][0] >= 0 and ranking["region"][2] <= 640 and ranking["region"][3] <= 120
+    reference = next(item for item in ranking["results"] if item["key"] == "reference")
+    assert (reference["timestamp_read"]["date"], reference["timestamp_read"]["time"]) == ("2026-09-14", "17:21:30")
+    assert ranking["selected"] == ranking["results"][0]["key"]
+    assert ranking["results"][0]["timestamp_read"]["date"] == "2026-09-14"  # the best read wins, and a clean print keeps the reference near the top
+
+
+def seed_ranking(store, identity):
+    with store.transaction() as connection:
+        evidence = json.loads(connection.execute("SELECT evidence FROM receipts WHERE id=?", (identity,)).fetchone()[0])
+        evidence["binarization"] = {"version": "binarize-candidates-v1", "region": [0, 20, 20, 60], "selected": "sauvola",
+                                    "results": [{"key": key, "label": key, "sha256": "0" * 64, "characters": 20, "confidence": 90.0,
+                                                 "timestamp_read": {"date": "2026-09-14", "time": "17:21:30" if key == "sauvola" else None}}
+                                                for key in ("sauvola", "otsu")]}
+        connection.execute("UPDATE receipts SET evidence=? WHERE id=?", (json.dumps(evidence), identity))
+
+
+def test_stamp_variant_previews_and_the_operator_chooses_processing_in_both_directions(runtime):
+    client, store = runtime
+    manifest, _ = capture(client, store)
+    identity = manifest["id"]
+    assert client.get(f"/api/receipts/{identity}/stamp-variant?variant=sauvola").status_code == 404
+    seed_ranking(store, identity)
+    response = client.get(f"/api/receipts/{identity}/stamp-variant?variant=sauvola")
+    assert response.status_code == 200 and response.content[:4] == b"\x89PNG"
+    assert client.get(f"/api/receipts/{identity}/stamp-variant?variant=reference").status_code == 422  # not measured here
+    group = next(g for g in state(client)["groups"] if any(r["id"] == identity for r in g["receipts"]))
+    assert group["receipts"][0]["binarization"] is None  # machine's ranking shows in evidence, no column value yet
+    result = client.post(f"/api/receipts/{identity}/binarization", json={"variant": "otsu", "version": group["version"]})
+    assert result.status_code == 200, result.text
+    assert result.json() == {"saved": True, "variant": "otsu", "version": group["version"] + 1}
+    group = next(g for g in state(client)["groups"] if any(r["id"] == identity for r in g["receipts"]))
+    assert group["receipts"][0]["binarization"] == "otsu"  # the operator can rank below the machine's pick
+    assert client.post(f"/api/receipts/{identity}/binarization", json={"variant": "stretched", "version": group["version"]}).status_code == 422
+    assert client.post(f"/api/receipts/{identity}/binarization", json={"variant": "bogus", "version": group["version"]}).status_code == 422
+    result = client.post(f"/api/receipts/{identity}/binarization", json={"variant": "default", "version": group["version"]})
+    assert result.json()["variant"] is None  # and hand the choice back to the machine
+    with store.transaction() as connection:
+        assert connection.execute("SELECT binarization FROM receipts WHERE id=?", (identity,)).fetchone()[0] is None
+
+
+def test_binarization_choice_stops_once_approval_starts(runtime):
+    client, store = runtime
+    manifest, _ = capture(client, store)
+    identity = manifest["id"]
+    seed_ranking(store, identity)
+    group = next(g for g in state(client)["groups"] if any(r["id"] == identity for r in g["receipts"]))
+    assert client.post(f"/api/receipts/{identity}/binarization", json={"variant": "otsu", "version": group["version"]}).status_code == 200
+    with store.transaction() as connection:
+        connection.execute("UPDATE groups SET state='finalizing' WHERE id=?", (group["id"],))  # approval has started
+        version = connection.execute("SELECT version FROM groups WHERE id=?", (group["id"],)).fetchone()[0]
+    result = client.post(f"/api/receipts/{identity}/binarization", json={"variant": "sauvola", "version": version})
+    assert result.status_code != 200
+    with store.transaction() as connection:
+        assert connection.execute("SELECT binarization FROM receipts WHERE id=?", (identity,)).fetchone()[0] == "otsu"

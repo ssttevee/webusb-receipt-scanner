@@ -15,7 +15,7 @@ type Pending = { id: string; created: number; blob: Blob; manifest: Manifest };
 type Diagnostic = { id: string; blob: Blob; metadata: unknown };
 type Receipt = { id: string; group_id: string; date: string | null; time: string | null; state: string;
   complete: number; readable: number; complete_source: string | null; readable_source: string | null;
-  vendor: string | null; error: string | null; languages: string[];
+  vendor: string | null; error: string | null; languages: string[]; binarization: string | null;
   field_source: "manual" | "ocr" | "unresolved" | "confirmed"; timestamp_review: number; analysis?: AnalysisRun | null };
 type AnalysisRun = { id: string; version: number; mode: string; state: string; error: string | null; has_evidence: boolean;
   policy: { requested: { date_order: string | null; century: string | number | null; expected_month?: string | null };
@@ -41,6 +41,12 @@ function recropStamps(line: RecropLine): [string, string][] {
 type Extraction = { version: string; status: string; issues: string[]; selected: { date: string; time: string } | null; candidates: Candidate[];
   routing?: { selected_engine: string | null; primary_issues: string[] } };
 type FallbackInfo = { state: string; reason: string | null; seconds: number };
+// The page pass ranks a fixed set of binarization recipes against the printed stamp region;
+// the operator's stored choice (receipt.binarization) overrides the machine's winner. Choosing
+// re-renders how the stamp reads - it never rules the timestamp itself.
+type BinarizationVariant = { key: string; label: string; sha256: string; characters: number; confidence: number;
+  timestamp_read: { date: string | null; time: string | null } };
+type BinarizationRanking = { version: string; region: number[]; results: BinarizationVariant[]; selected: string };
 type Export = { id: string; path: string; state: string; drive_id: string | null };
 type Group = { id: string; version: number; state: string; manual: number; receipts: Receipt[]; exports: Export[] };
 type Job = { id: string; kind: string; target: string; state: string; attempts: number; error: string | null };
@@ -190,6 +196,7 @@ function ReceiptEditor({ receipt, group, refresh, selected, select, report, onDi
   const [height, setHeight] = useState(512);
   const [evidence, setEvidence] = useState<unknown>(null);
   const [extraction, setExtraction] = useState<Extraction | null>(null);
+  const [ranking, setRanking] = useState<BinarizationRanking | null>(null);
   const [fallbackInfo, setFallbackInfo] = useState<FallbackInfo | null>(null);
   const [busy, setBusy] = useState(false);
   const [baseVersion, setBaseVersion] = useState(group.version);
@@ -203,6 +210,7 @@ function ReceiptEditor({ receipt, group, refresh, selected, select, report, onDi
   // every returned line is a proposal the operator chooses to use.
   const [recrop, setRecrop] = useState<{ lines: RecropLine[] } | null>(null);
   const [recropBusy, setRecropBusy] = useState(false);
+  const [variantBusy, setVariantBusy] = useState(false);
   const stampBox = (() => {
     const candidates = extraction?.candidates ?? [];
     const chosen = candidates.find(candidate => extraction?.selected
@@ -219,6 +227,18 @@ function ReceiptEditor({ receipt, group, refresh, selected, select, report, onDi
     try { setRecrop(await api<{ lines: RecropLine[] }>(`/api/receipts/${receipt.id}/recrop`, { box: stampBox, expand })); }
     catch (error) { report(String(error)); } finally { setRecropBusy(false); }
   }
+  // Choosing a processing recipe is a ruling about how the stamp is rendered, not what it says:
+  // it writes one column and re-renders previews and the export page. It can override the
+  // machine's winner or hand the choice back, and either way the timestamp fields stay put.
+  const variantInUse = receipt.binarization ?? ranking?.selected ?? null;
+  async function chooseVariant(variant: string) {
+    setVariantBusy(true);
+    try {
+      const saved = await api<{ version: number }>(`/api/receipts/${receipt.id}/binarization`, { variant, version: baseVersion });
+      setBaseVersion(saved.version);
+      await refresh();
+    } catch (error) { report(String(error)); } finally { setVariantBusy(false); }
+  }
   useEffect(() => {
     if (receipt.state !== "ready") return;
     if (!dirty && (!receipt.analysis || ["ready", "failed"].includes(receipt.analysis.state))) {
@@ -227,9 +247,10 @@ function ReceiptEditor({ receipt, group, refresh, selected, select, report, onDi
     }
     // The dependency on field_source re-syncs the local boxes after batch confirmation changes server flags.
     let active = true;
-    void api<{ capture: { height: number }; processing: { extraction?: Extraction; ocr?: { fallback?: FallbackInfo } } | null }>(`/api/receipts/${receipt.id}/evidence`, undefined, "GET").then(result => {
+    void api<{ capture: { height: number }; processing: { extraction?: Extraction; binarization?: BinarizationRanking; ocr?: { fallback?: FallbackInfo } } | null }>(`/api/receipts/${receipt.id}/evidence`, undefined, "GET").then(result => {
       if (!active) return;
       setHeight(result.capture.height); setEvidence(result.processing); setExtraction(result.processing?.extraction ?? null);
+      setRanking(result.processing?.binarization ?? null);
       setFallbackInfo(result.processing?.ocr?.fallback ?? null);
     }).catch(error => report(String(error)));
     return () => { active = false; };
@@ -253,7 +274,7 @@ function ReceiptEditor({ receipt, group, refresh, selected, select, report, onDi
       {receipt.field_source === "manual" && <p>Your saved fields take priority over the OCR proposal.</p>}
       {receipt.field_source === "confirmed" && <p class="muted">Batch confirmation accepted the stored proposal and attested this page. Manual review stays available.</p>}
       {extraction.issues.length > 0 && <p class="muted">{extraction.issues.map(issue => issue.replaceAll("_", " ")).join(" · ")}</p>}
-      <details><summary>Timestamp candidates & source regions ({extraction.candidates.length})</summary>
+      <details class="candidates"><summary>Timestamp candidates & source regions ({extraction.candidates.length})</summary>
         {extraction.candidates.map(candidate => <div class="candidate" key={candidate.id}>
           <p><code>{candidate.dates.join(" or ") || "Unresolved date"} {candidate.time || "Invalid time"}</code></p>
           {candidate.issues.length > 0 && <p class="muted">{candidate.issues.map(issue => issue.replaceAll("_", " ")).join(" · ")}</p>}
@@ -281,6 +302,28 @@ function ReceiptEditor({ receipt, group, refresh, selected, select, report, onDi
         </li>)}</ul>
           : <p class="muted">The wider window still reads no date or time. Widen further from the inspection strips.</p>)}
       </div>}
+      {ranking && <details class="variants" open>
+        <summary>Stamp processing ({ranking.results.length} recipes measured)</summary>
+        <p class="muted">The page pass re-read this page's printed stamp region through each recipe and ranked what it
+          read. Choosing one changes how the stamp renders for reading and in the approved export; it never changes
+          the timestamp by itself.</p>
+        <ul class="variant-list">{ranking.results.map(item => <li key={item.key}>
+          <img src={`/api/receipts/${receipt.id}/stamp-variant?variant=${item.key}`}
+            alt={`${item.label} rendering of the stamp region`} />
+          <div>
+            <strong>{item.label}</strong>
+            {item.key === ranking.selected && <span class="muted"> · machine's pick</span>}
+            {item.key === variantInUse && <strong class="in-use"> · in use</strong>}
+            <p class="muted">{item.timestamp_read.date ?? "no date"} {item.timestamp_read.time ?? ""}
+              {" "}· confidence {item.confidence} · {item.characters} characters</p>
+            {editable && !stale && !variantBusy && item.key !== variantInUse &&
+              <button class="secondary" onClick={() => chooseVariant(item.key)}>Use this</button>}
+            {editable && !stale && !variantBusy && receipt.binarization && item.key === variantInUse &&
+              <button class="secondary" onClick={() => chooseVariant("default")}
+                title="Return to the recipe the page pass ranked first">Let the machine choose</button>}
+          </div>
+        </li>)}</ul>
+      </details>}
       {extraction.selected && editable && <button class="secondary" onClick={() => {
         setDate(extraction.selected!.date); setClock(extraction.selected!.time); setDirty(true);
       }}>Use proposed timestamp</button>}

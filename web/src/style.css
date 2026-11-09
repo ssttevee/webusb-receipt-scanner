@@ -65,6 +65,12 @@ summary{cursor:pointer;font-weight:600;margin:8px 0}
 .recrop-lines{list-style:none;display:grid;gap:5px;margin:8px 0 0;padding:0;flex-basis:100%}
 .recrop-lines li{display:flex;flex-wrap:wrap;align-items:center;gap:7px}
 .recrop-lines code{background:#eef2f4;border:1px solid #d4dfe4;border-radius:5px;padding:2px 7px;font-variant-numeric:tabular-nums}
+/* Ranked stamp-processing candidates: the rendered crop beside the numbers that ranked it. */
+.variants{margin-top:10px}
+.variant-list{list-style:none;display:grid;gap:8px;margin:8px 0;padding:0}
+.variant-list li{display:flex;gap:10px;align-items:flex-start;border:1px solid #d4dfe4;border-radius:7px;padding:7px 9px;background:white}
+.variant-list li img{max-width:min(100%,420px);max-height:88px;object-fit:contain;background:#f4f7f8;border-radius:4px}
+.variant-list .in-use{color:#1c6b46}
 .approval{margin-top:14px;padding:14px;background:#eff5f1;border-radius:8px;overflow-wrap:anywhere}
 .empty{text-align:center;padding:40px 24px}
 .jobs p{padding:8px 0;border-bottom:1px solid #d4dfe4}

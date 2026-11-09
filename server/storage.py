@@ -108,7 +108,7 @@ CREATE TABLE receipts(id TEXT PRIMARY KEY REFERENCES captures(id), group_id TEXT
  master TEXT, preview TEXT, evidence TEXT, error TEXT, created REAL NOT NULL,
  field_source TEXT NOT NULL DEFAULT 'unresolved', timestamp_review INTEGER NOT NULL DEFAULT 1,
  analysis_version INTEGER NOT NULL DEFAULT 0, active_analysis TEXT,
- complete_source TEXT, readable_source TEXT);
+ complete_source TEXT, readable_source TEXT, binarization TEXT);
 CREATE TABLE exports(id TEXT PRIMARY KEY, group_id TEXT NOT NULL REFERENCES groups(id),
  version INTEGER NOT NULL, path TEXT NOT NULL UNIQUE, snapshot TEXT NOT NULL,
  state TEXT NOT NULL DEFAULT 'reserved', sha256 TEXT, drive_id TEXT, created REAL NOT NULL);
@@ -123,7 +123,7 @@ CREATE TABLE analysis_runs(id TEXT PRIMARY KEY, receipt_id TEXT NOT NULL REFEREN
  version INTEGER NOT NULL, mode TEXT NOT NULL, policy TEXT NOT NULL, state TEXT NOT NULL,
  base_id TEXT REFERENCES analysis_runs(id), evidence_path TEXT, evidence_sha256 TEXT,
  error TEXT, created REAL NOT NULL, UNIQUE(receipt_id,version));
-PRAGMA user_version=4;
+PRAGMA user_version=5;
 """
 
 
@@ -156,7 +156,11 @@ class Store:
                 connection.execute("ALTER TABLE receipts ADD COLUMN complete_source TEXT")
                 connection.execute("ALTER TABLE receipts ADD COLUMN readable_source TEXT")
                 connection.execute("PRAGMA user_version=4")
-            elif version not in (0, 4):
+                version = 4
+            if version == 4:
+                connection.execute("ALTER TABLE receipts ADD COLUMN binarization TEXT")
+                connection.execute("PRAGMA user_version=5")
+            elif version not in (0, 5):
                 raise RuntimeError("Unsupported database schema; use the matching application version")
         os.chmod(self.database, 0o600)
 
