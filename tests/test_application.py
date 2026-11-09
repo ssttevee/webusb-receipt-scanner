@@ -821,14 +821,39 @@ def test_rank_binarization_reads_the_stamp_under_every_recipe_and_ranks_the_read
     master = tmp_path / "master.png"
     canvas.save(master)
     evidence = {"extraction": {"candidates": [{"id": "c", "sources": [{"box": [15, 20, 330, 50]}]}], "selected": {"candidate_id": "c"}}}
-    ranking = rank_binarization({"master": str(master)}, {"languages": ["eng"]}, evidence)
-    assert ranking["version"] == "binarize-candidates-v1"
+    policy = {"effective": {"date_order": None, "century": 2000, "expected_month": None}}
+    ranking = rank_binarization({"master": str(master)}, {"languages": ["eng"]}, evidence, policy)
+    assert ranking["version"] == "binarize-candidates-v2"
     assert {item["key"] for item in ranking["results"]} == {"reference", "stretched", "otsu", "sauvola"}
     assert ranking["region"][0] >= 0 and ranking["region"][2] <= 640 and ranking["region"][3] <= 120
     reference = next(item for item in ranking["results"] if item["key"] == "reference")
     assert (reference["timestamp_read"]["date"], reference["timestamp_read"]["time"]) == ("2026-09-14", "17:21:30")
     assert ranking["selected"] == ranking["results"][0]["key"]
     assert ranking["results"][0]["timestamp_read"]["date"] == "2026-09-14"  # the best read wins, and a clean print keeps the reference near the top
+
+
+@pytest.mark.skipif(shutil.which("tesseract") is None, reason="requires the OCR command line")
+def test_rank_binarization_scores_reads_under_the_pages_own_date_policy(tmp_path):
+    # A stamp reading 10/01/26 7:05:13 PM once ranked "no date" under every recipe: the readers
+    # ran bare, and two-digit years only resolve with the century the analysis pass was given.
+    from PIL import ImageDraw, ImageFont
+    from server.worker import rank_binarization
+    canvas = Image.new("L", (640, 120), 255)
+    ImageDraw.Draw(canvas).text((20, 22), "10/01/26 7:05:13 PM", fill=0, font=ImageFont.load_default(size=28))
+    master = tmp_path / "master.png"
+    canvas.save(master)
+    evidence = {"extraction": {"candidates": [{"id": "c", "sources": [{"box": [15, 20, 330, 50]}]}], "selected": {"candidate_id": "c"}}}
+    page = {"effective": {"date_order": None, "century": 2000, "expected_month": "2026-10"}}
+    ranking = rank_binarization({"master": str(master)}, {"languages": ["eng"]}, evidence, page)
+    reference = next(item for item in ranking["results"] if item["key"] == "reference")
+    assert (reference["timestamp_read"]["date"], reference["timestamp_read"]["time"]) == ("2026-10-01", "19:05:13")
+    assert ranking["selected"] == ranking["results"][0]["key"]
+    assert ranking["results"][0]["timestamp_read"]["date"] == "2026-10-01"  # with the policy, reads rank on their reads
+
+    blind = {"effective": {"date_order": None, "century": None, "expected_month": None}}
+    ranking = rank_binarization({"master": str(master)}, {"languages": ["eng"]}, evidence, blind)
+    for item in ranking["results"]:  # honest without a century: the time still reads, the two-digit year does not
+        assert item["timestamp_read"]["date"] is None and item["timestamp_read"]["time"] == "19:05:13"
 
 
 def seed_ranking(store, identity):

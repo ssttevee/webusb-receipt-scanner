@@ -118,10 +118,12 @@ def stamp_region(evidence):
             max(box[2] for box in boxes), max(box[3] for box in boxes)]
 
 
-def rank_binarization(receipt, capture, evidence):
+def rank_binarization(receipt, capture, evidence, policy):
     """RA-11: read this page's printed timestamp region once per recipe and score the reads, so
-    the operator can see which processing surfaced the stamp and choose it. It measures only —
-    no timestamp, legibility or field anywhere is written from these numbers."""
+    the operator can see which processing surfaced the stamp and choose it. The date and time
+    readers run under the page pass's own policy - two-digit years and numeric order only resolve
+    with the century and month the analysis was actually given. It measures only: no timestamp,
+    legibility or field anywhere is written from these numbers."""
     region = stamp_region(evidence)
     if not region:
         return None
@@ -134,6 +136,7 @@ def rank_binarization(receipt, capture, evidence):
     if gray.shape[1] < 24 or gray.shape[0] < 12:
         return None
     profile = [language for language in capture["languages"] if language in ("eng", "fra", "jpn", "chi_tra", "chi_sim")] or ["eng"]
+    effective = policy["effective"]
     results = []
     for key, recipe in RECIPES.items():  # reference is listed first; a stable sort keeps it first on exact ties
         pixels = recipe_png(apply_recipe(key, gray))
@@ -147,7 +150,8 @@ def rank_binarization(receipt, capture, evidence):
         weighted = sum(line.confidence * len(line.text) for line in lines) / characters if characters else 0.0
         date_values, time_values = [], []
         for line in lines:
-            found_dates = dates(line.text)
+            found_dates = dates(line.text, order=effective["date_order"], century=effective["century"],
+                                expected_month=effective.get("expected_month"))
             date_values.extend(value for item in found_dates for value in item["values"])
             time_values.extend(item["value"] for item in times(line.text, [item["span"] for item in found_dates]) if item["value"])
         results.append({"key": key, "label": recipe["label"], "sha256": hashlib.sha256(pixels).hexdigest(),
@@ -221,7 +225,7 @@ def analyze(store, run_id, ocr_backend=None, fallback=None, job=None):
             evidence["date_time_source"] = evidence["extraction"]["version"]
             if run["mode"] == "ocr":
                 try:
-                    ranking = rank_binarization(receipt, capture, evidence)
+                    ranking = rank_binarization(receipt, capture, evidence, policy)
                 except Exception as error:
                     # The ranking is a convenience for the operator; it must never fail the analysis.
                     evidence["binarization_error"] = str(error)[:300]

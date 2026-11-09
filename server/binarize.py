@@ -9,7 +9,7 @@ import io
 import numpy as np
 from PIL import Image
 
-VERSION = "binarize-candidates-v1"
+VERSION = "binarize-candidates-v2"
 
 
 def reference(gray):
