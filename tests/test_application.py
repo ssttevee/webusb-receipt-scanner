@@ -351,6 +351,108 @@ def test_timestamp_strip_shows_only_the_accepted_candidate_region(runtime, monke
     assert box[1] == 10 and box[3] == 30
 
 
+def seed_pages(client, store, times):
+    """One scan, several pages. The manifest bytes cannot be made to OCR, so the caller rules the
+    page timestamps first — this seeds the shape the review rows render, not the OCR outcome."""
+    import numpy as np
+    pages = []
+    for index in range(len(times)):
+        image = np.full((1200, 720, 3), 235, dtype=np.uint8)
+        image[140 + index * 200:170 + index * 200, 40:500] = 20
+        buffer = io.BytesIO()
+        Image.fromarray(image).save(buffer, "PNG")
+        pages.append(buffer.getvalue())
+    identity = str(uuid.uuid4())
+    manifest = {"id": identity, "sha256": hashlib.sha256(b"".join(pages)).hexdigest(),
+        "byte_length": sum(len(page) for page in pages), "kind": "scanner-raw",
+        "width": 720, "height": 1200, "dpi_x": 300, "dpi_y": 300, "transport_complete": True}
+    assert client.post("/api/captures", json=manifest).status_code == 200
+    for index, page in enumerate(pages):
+        assert client.put(f"/api/captures/{identity}/chunks/{index}", content=page,
+            headers={**HEADERS, "Content-Type": "application/octet-stream"}).status_code == 200
+    assert client.post(f"/api/captures/{identity}/finalize").json()["durable"] is True
+    store.settings.ocr = False
+    assert run_one(store)
+    with store.transaction() as connection:
+        for order, (date, clock) in enumerate(times, 1):
+            connection.execute("UPDATE receipts SET date=?,time=?,field_source='scanner',timestamp_review=0,"
+                "page_order=? WHERE id=?", (date, clock, order, identity))
+            store.changed(connection, next(connection.execute(
+                "SELECT group_id FROM receipts WHERE id=?", (identity,)))["group_id"])
+    return identity
+
+
+def test_group_stamp_writes_one_ruling_to_every_page_without_splitting(runtime, monkeypatch):
+    import server.worker as worker
+    client, store = runtime
+    store.settings.ocr = True
+    lines = [Line("2026-09-14 17:21:30", (0, 10, 500, 30), 95, "discovery"),
+             Line("2026-09-14 17:21:30", (0, 10, 500, 30), 95, "tile-00")]
+    monkeypatch.setattr(worker, "recognize", lambda *args, **kwargs: {"state": "done", "engine": "fixture", "extraction": extract(lines)})
+    capture(client, store); capture(client, store)
+    group = state(client)["groups"][0]
+    assert len(group["receipts"]) == 2 and all(page["timestamp_review"] for page in group["receipts"])
+    # The row form's ruling is per group: minutes only, since the operator read them off the strip.
+    stamped = client.post("/api/receipts/apply-stamp",
+        json={"groups": {group["id"]: group["version"]}, "date": "2026-09-14", "time": "17:21"})
+    assert stamped.status_code == 200 and stamped.json()["pages"] == 2, stamped.text
+    after = state(client)["groups"]
+    # Unlike a per-page edit, the group that was ruled on is still one group of two pages.
+    assert [g["id"] for g in after] == [group["id"]] and len(after[0]["receipts"]) == 2
+    for page in after[0]["receipts"]:
+        assert (page["date"], page["time"]) == ("2026-09-14", "17:21")
+        assert page["field_source"] == "manual" and not page["timestamp_review"]
+        assert page["complete"] and page["readable"]
+        assert page["complete_source"] == page["readable_source"] == "operator"
+    # One keystroke from there: the ruling is exactly what approval was waiting on.
+    export = prepared(client, after[0])
+    assert client.post(f"/api/groups/{group['id']}/approve",
+        json={"export_id": export["id"], "version": after[0]["version"]}).status_code == 202
+
+
+def test_group_stamp_refuses_stale_versions_and_impossible_dates(runtime):
+    client, store = runtime
+    manifest, _ = capture(client, store)
+    group = state(client)["groups"][0]
+    assert client.post("/api/receipts/apply-stamp",
+        json={"groups": {group["id"]: group["version"] + 1}, "date": "2026-09-14", "time": "17:21:30"}).status_code == 409
+    for date, clock in (("2026-02-30", "17:21"), ("2026-9-14", "17:21"), ("2026-09-14", "17:2"), ("2026-09-14", "2026-09-14")):
+        assert client.post("/api/receipts/apply-stamp",
+            json={"groups": {group["id"]: group["version"]}, "date": date, "time": clock}).status_code == 422
+    # A page mid-processing cannot be ruled on underneath the worker.
+    waiting, _ = capture(client, store, process=False)
+    waiting_group = next(g for g in state(client)["groups"] if any(r["id"] == waiting["id"] for r in g["receipts"]))
+    assert client.post("/api/receipts/apply-stamp",
+        json={"groups": {waiting_group["id"]: waiting_group["version"]}, "date": "2026-09-14", "time": "17:21"}).status_code == 409
+    assert next(r for r in state(client)["groups"] if r["id"] == waiting_group["id"])["receipts"][0]["date"] is None
+    assert manifest["id"] != waiting["id"]
+
+
+def test_timestamp_candidates_show_every_pass_and_crop_its_own_region(runtime, monkeypatch):
+    import server.worker as worker
+    client, store = runtime
+    plain, _ = capture(client, store)
+    assert client.get(f"/api/receipts/{plain['id']}/timestamp-candidates").status_code == 404
+    store.settings.ocr = True
+    lines = [Line("2026-09-14 17:21:30", (0, 10, 500, 30), 95, "discovery"),
+             Line("2026-09-14 17:21:30", (0, 10, 500, 30), 95, "tile-00")]
+    proposal = extract(lines)
+    monkeypatch.setattr(worker, "recognize", lambda *args, **kwargs: {"state": "done", "engine": "fixture", "extraction": proposal})
+    manifest, _ = capture(client, store)
+    listing = client.get(f"/api/receipts/{manifest['id']}/timestamp-candidates")
+    assert listing.status_code == 200, listing.text
+    body = listing.json()
+    assert body["status"] == "proposed" and body["candidates"]
+    candidate = body["candidates"][0]
+    assert candidate["dates"] == ["2026-09-14"] and candidate["time"] == "17:21:30" and candidate["box"]
+    assert candidate["text"].startswith("2026-09-14")
+    # A row can crop any candidate it lists, not only the accepted one: the rival is the comparison.
+    rival = client.get(f"/api/receipts/{manifest['id']}/timestamp-strip?candidate={candidate['id']}")
+    assert rival.status_code == 200 and rival.headers["content-type"] == "image/png"
+    assert Image.open(io.BytesIO(rival.content)).mode == "1"
+    assert client.get(f"/api/receipts/{manifest['id']}/timestamp-strip?candidate=nope").status_code == 404
+
+
 def test_approved_export_deletion_purges_rows_and_files(runtime):
     client, store = runtime
     manifest, _ = capture(client, store)

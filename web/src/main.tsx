@@ -20,6 +20,10 @@ type Receipt = { id: string; group_id: string; date: string | null; time: string
 type AnalysisRun = { id: string; version: number; mode: string; state: string; error: string | null; has_evidence: boolean;
   policy: { requested: { date_order: string | null; century: string | number | null; expected_month?: string | null };
     effective: { date_order: string | null; century: number | null; expected_month?: string | null }; source: string } };
+// A receipt's printed timestamp candidates, straight from its stored evidence: what each OCR pass
+// saw, with the master rows it saw them in.
+type StampCandidate = { id: string; dates: string[]; time: string | null; issues: string[]; box: number[] | null; text: string };
+type StampReading = { status: string; issues: string[]; candidates: StampCandidate[] };
 type Candidate = { id: string; dates: string[]; time: string | null; issues: string[];
   sources: { text: string; box: number[]; ocr_confidence: number; pass: string }[] };
 type Extraction = { version: string; status: string; issues: string[]; selected: { date: string; time: string } | null; candidates: Candidate[];
@@ -40,6 +44,33 @@ type Reason = { code: string; label: string; hard: boolean };
 // out: chips carry the full instruction and the action button carries the verb itself.
 const FIX_RANK: Record<string, number> = { error: 0, processing: 1, timestamp: 2, "analysis-failed": 3, incomplete: 4, unreadable: 5, analyzing: 6, proposal: 7 };
 const ACT_VERB: Record<string, string> = { confirm: "Confirm", attest: "Attest", approve: "Approve", retry: "Retry" };
+
+type Draft = { date: string; time: string };
+
+// The half-known printed facts for a group, in the shape the review endpoint wants. A stored
+// proposal already writes its date and time to the page, so that is the first place to look. When
+// the page never resolved, the candidate list still holds the halves OCR did read: the common
+// failure is one pass reading the date and the other only the clock, and a human who can see
+// "16:47" on the strip still has to supply the date, so the form starts from the half we know.
+// Seconds are never invented — a minute-precision candidate fills HH:MM and leaves them blank.
+function mergeTimestamp(group: Group, readings: Record<string, StampReading> = {}): [string, string] {
+  const stored = group.receipts.map(receipt => [receipt.date ?? "", receipt.time ?? ""] as [string, string]);
+  const complete = stored.filter(([date, time]) => date && time).sort();
+  if (complete.length) return complete[0];
+  const dates: string[] = []; const times: string[] = [];
+  for (const receipt of group.receipts) for (const candidate of readings[receipt.id]?.candidates ?? []) {
+    if (candidate.dates.length === 1) dates.push(candidate.dates[0]);
+    if (candidate.time && !candidate.issues.length) times.push(candidate.time);
+  }
+  return [stored.map(pair => pair[0]).find(Boolean) ?? dates.sort()[0] ?? "",
+    stored.map(pair => pair[1]).find(Boolean) ?? times.sort()[0] ?? ""];
+}
+
+// A row's pending ruling: what the operator typed if they typed anything, else the merged evidence.
+function draftOf(group: Group, readings: Record<string, StampReading>, typed?: Draft): Draft {
+  const [date, time] = mergeTimestamp(group, readings);
+  return { date: typed?.date ?? date, time: typed?.time ?? time };
+}
 
 function receiptIssues(receipt: Receipt): Reason[] {
   const issues: Reason[] = [];
@@ -367,46 +398,92 @@ function primaryFix(group: Group, jobs: Job[], confirmIds: Set<string>, approveI
   }
 }
 
-// One ledger cell: fixed height, never wraps, and carries the one action that needs no dialog.
-function LedgerCell({ group, index, fix, focused, busy, edit, act }: {
+// The evidence a row rests on: the accepted stamp where one is accepted, else each candidate's own
+// printed region with the line OCR read there, else the page itself for a scan that never resolved
+// anything. A page still being processed has no master yet, so its first fetch can honestly fail;
+// the broken map is keyed by processing state so the next poll retries rather than staying blank.
+function StampEvidence({ receipt, reading, limit = 2 }: { receipt: Receipt; reading?: StampReading; limit?: number }) {
+  const phase = `${receipt.state}/${receipt.analysis?.state ?? "ready"}`;
+  const [broken, setBroken] = useState<Record<string, boolean>>({});
+  const accepted = receipt.date && receipt.time && !receipt.timestamp_review;
+  const candidates = (reading?.candidates ?? []).filter(candidate => candidate.box).slice(0, limit);
+  const slot = (source: string, kind: string, alt: string, caption = "", hint = "") => {
+    const key = `${source}|${phase}`;
+    if (broken[key]) return <span class="stamp-slot blank" title="No image could be shown for this page" />;
+    return <span class="stamp-slot" key={key}>
+      <img class={`stamp-strip${kind}`} src={source} loading="lazy" alt={alt}
+        onError={() => setBroken(previous => ({ ...previous, [key]: true }))} />
+      {caption && <small title={hint || caption}>{caption}</small>}</span>;
+  };
+  if (accepted || !candidates.length) {
+    return slot(`/api/receipts/${receipt.id}/${accepted ? "timestamp-strip" : "image"}`, accepted ? "" : " page",
+      accepted ? `Accepted timestamp region of ${receipt.id.slice(0, 8)}` : `Preview of ${receipt.id.slice(0, 8)}`,
+      accepted ? `${receipt.date} ${receipt.time}` : "");
+  }
+  return <>{candidates.map(candidate => slot(`/api/receipts/${receipt.id}/timestamp-strip?candidate=${candidate.id}`,
+    " ghost", `Candidate timestamp region of ${receipt.id.slice(0, 8)}`,
+    `${candidate.dates[0] ?? "no date"} ${candidate.time ?? "no time"}`, candidate.text))}</>;
+}
+
+// One review row: tall enough to hold its evidence and its form, and it carries the verb that
+// needs no dialog. Reading order is evidence, ruling, exit.
+function LedgerCell({ group, index, fix, focused, busy, edit, act, draft, setDraft, save, readings }: {
   group: Group; index: number; fix: Fix; focused: boolean; busy: boolean; edit: () => void; act: () => Promise<void>;
+  draft: Draft; setDraft: (value: string, field: "date" | "time") => void; save: () => Promise<void>;
+  readings: Record<string, StampReading>;
 }) {
   const title = groupTitle(group);
   const chips = (group.state === "approval_failed" ? [{ code: "approval-failed", label: "approval failed", count: 1, hard: true }] : [])
     .concat(groupIssues(group));
   const working = chips.length > 0 && chips.every(chip => chip.code === "analyzing");
+  const reviewable = group.receipts.some(receipt => !receipt.date || !receipt.time || receipt.timestamp_review);
+  // A row can hold two slots of evidence: with several pages each gets its own stamp, with one page
+  // the rival candidates sit side by side so the eye can pick between them.
+  const evidence = group.receipts.slice(0, 2);
+  const evidenceLimit = evidence.length > 1 ? 1 : 2;
   return <section class="cell" data-group-id={group.id} data-ledger-index={index} data-severity={groupSeverity(group)}
     data-focused={focused || undefined} title={`${title} · version ${group.version} · ${group.manual ? "manual grouping" : "same-minute grouping"} · ${
       chips.map(chip => `${chip.label}${chip.count > 1 ? ` ×${chip.count}` : ""}`).join(" · ") || "no open issues"}`}>
     <span class={`glyph${working ? " working" : ""}`} aria-hidden="true">{SEVERITY_GLYPH[groupSeverity(group)]}</span>
     <button class="ident" aria-haspopup="dialog" aria-label={`Edit group ${title}`} onClick={edit}>
       {title} <em>{group.receipts.length} page{group.receipts.length === 1 ? "" : "s"}</em></button>
-    <span class="fixes">{chips.slice(0, 3).map(chip => <span class={`pill ${chip.hard ? "bad" : "warn"}`} key={chip.code}>
-      {chip.label}{chip.count > 1 ? ` ×${chip.count}` : ""}</span>)}
-      {chips.length > 3 && <span class="pill more">+{chips.length - 3} more</span>}</span>
-    {fix && <button class={`act ${fix.kind}`} disabled={busy} onClick={act} aria-label={fix.hint} title={fix.hint}>
-      {ACT_VERB[fix.kind]}{fix.count > 1 ? ` ×${fix.count}` : ""}</button>}
+    <span class="stamps" aria-label={`Printed timestamp evidence for ${title}`}>
+      {evidence.map(receipt => <StampEvidence receipt={receipt} reading={readings[receipt.id]} limit={evidenceLimit} key={receipt.id} />)}
+    </span>
+    <span class="ruling">
+      <span class="fields">
+        <label>Transaction<input class="stamp-date" type="date" aria-label={`Transaction date for ${title}`}
+          value={draft.date} disabled={busy} onChange={event => setDraft(event.currentTarget.value, "date")} /></label>
+        <label>Time<input class="stamp-time" type="time" step="1" aria-label={`Transaction time for ${title}`}
+          value={draft.time} disabled={busy} onChange={event => setDraft(event.currentTarget.value, "time")} /></label>
+      </span>
+      <span class="fixes">{chips.slice(0, 2).map(chip => <span class={`pill ${chip.hard ? "bad" : "warn"}`} key={chip.code}>
+        {chip.label}{chip.count > 1 ? ` ×${chip.count}` : ""}</span>)}
+        {chips.length > 2 && <span class="pill more">+{chips.length - 2} more</span>}</span>
+    </span>
+    <span class="row-actions">
+      {/* A stored proposal is prefilled so it can be corrected as fast as it can be accepted: the
+          row offers both Save (write what the fields hold) and the group's own quick verb. */}
+      {reviewable && <button class="act save" disabled={busy || !draft.date || !draft.time} onClick={save}
+        aria-label={`Save ${draft.date || "the date"} ${draft.time || "the time"} for ${title}`}
+        title={draft.date && draft.time ? `Write this timestamp to all ${group.receipts.length} page${group.receipts.length === 1 ? "" : "s"} and attest them` : "Both a date and a time are needed"}>
+        Save{group.receipts.length > 1 ? ` ×${group.receipts.length}` : ""}</button>}
+      {fix && <button class={`act ${fix.kind}`} disabled={busy} onClick={act} aria-label={fix.hint} title={fix.hint}>
+        {ACT_VERB[fix.kind]}{fix.count > 1 ? ` ×${fix.count}` : ""}</button>}
+      <button class="act details" aria-haspopup="dialog" onClick={edit}
+        aria-label={`Details for ${title}`} title={`Open all pages and fields for ${title}`}>Details</button>
+    </span>
   </section>;
 }
 
-// The proof a settled group is showing one: the binarized master rows behind the accepted OCR
-// timestamp, cropped server-side to the winning candidate's region. A page whose timestamp was
-// typed by hand has no such region; its slot stays empty instead of crying broken image.
-function TimestampStrip({ group }: { group: Group }) {
-  const receipt = group.receipts.find(item => item.date && item.time) ?? group.receipts[0];
-  const [missing, setMissing] = useState(false);
-  if (!receipt || missing) return <span class="stamp-fallback" title="No accepted OCR timestamp region for this page" />;
-  return <img class="stamp-strip" src={`/api/receipts/${receipt.id}/timestamp-strip`} loading="lazy"
-    alt={`Accepted timestamp region of ${groupTitle(group)}`} onError={() => setMissing(true)} />;
-}
-
-// One Approve-tab row: strip, stamp, and the two verbs. Approve is the one keystroke the quick
-// path already vets; Fix hands the group back to the full review dialog.
+// One Approve-tab row: the accepted stamp, its date and time, and the two verbs. Approve is the
+// one keystroke the quick path already vets; Fix hands the group back to the full review dialog.
 function ApproveRow({ group, busy, approve, fix }: { group: Group; busy: boolean; approve: () => void; fix: () => void }) {
   const title = groupTitle(group);
   const clock = group.receipts.map(receipt => receipt.time).filter(Boolean).sort();
+  const proof = group.receipts.slice().sort((left, right) => `${left.date}T${left.time}`.localeCompare(`${right.date}T${right.time}`))[0];
   return <section class="approve-row" data-group-id={group.id} data-version={group.version}>
-    <TimestampStrip group={group} />
+    {proof && <StampEvidence receipt={proof} />}
     <p class="stamp-meta"><strong>{title}</strong>
       {clock.length > 0 && <span>{clock.length === 1 || clock[0] === clock[clock.length - 1] ? clock[0] : `${clock[0]}–${clock[clock.length - 1]}`}</span>}
       <em>{group.receipts.length} page{group.receipts.length === 1 ? "" : "s"}</em>
@@ -522,6 +599,11 @@ function App() {
   const [sendingExport, setSendingExport] = useState("");
   const [quickBusy, setQuickBusy] = useState(false);
   const [busyGroups, setBusyGroups] = useState(new Set<string>());
+  // What each unresolved page's OCR actually printed, and what the operator has typed in a row's
+  // form so far. Both are keyed by ID and survive polling: a re-render must not wipe half-typed
+  // values, and the candidate readings never change while a page sits in review.
+  const [drafts, setDrafts] = useState<Record<string, Draft>>({});
+  const [readings, setReadings] = useState<Record<string, StampReading>>({});
   const [ledgerStage, setLedgerStage] = useState<"all" | "attention" | "confirm">("all");
   const [cursor, setCursor] = useState<number | null>(null);
   const [focusDate, setFocusDate] = useState(false);
@@ -666,6 +748,28 @@ function App() {
   // A group with nothing left to fix stops being a ledger row: it waits on the Approve tab, where
   // one keystroke approves it and Fix reopens the very dialog Review uses.
   const approveLedger = orderLedger(approveBucket);
+  // A page whose timestamp is not settled needs its candidate list before the row can prefill or
+  // crop a region, so it is fetched once per page and kept: rows are few, and the evidence behind
+  // them is frozen while the page stays in review. The request set is a ref because the poll that
+  // re-runs this effect must not re-fetch, and an in-flight fetch must not be dropped by the
+  // render that follows it — a cancelled promise is how a row ends up showing the whole page.
+  const readingRequests = useRef(new Set<string>());
+  useEffect(() => {
+    const wanted = reviewGroups.flatMap(group => group.receipts)
+      .filter(receipt => (!receipt.date || !receipt.time || receipt.timestamp_review) && !readingRequests.current.has(receipt.id))
+      .map(receipt => receipt.id);
+    if (!wanted.length) return;
+    for (const identity of wanted) readingRequests.current.add(identity);
+    void Promise.all(wanted.map(async identity => {
+      try { return [identity, await api<StampReading>(`/api/receipts/${identity}/timestamp-candidates`, undefined, "GET")] as const; }
+      catch { return null; }  // A page still being analysed has no evidence yet; retry on the next poll.
+    })).then(results => {
+      const list = results.filter((item): item is readonly [string, StampReading] => item !== null);
+      if (list.length) setReadings(previous => Object.fromEntries([...Object.entries(previous), ...list]));
+      const failed = new Set(wanted.filter(identity => !list.some(([found]) => found === identity)));
+      failed.forEach(identity => readingRequests.current.delete(identity));
+    });
+  }, [state]);
   // The key handler is registered once, so it reads the live ledger and cursor through refs: a
   // closure captured between polls can step onto the wrong group or one that no longer exists.
   const ledgerRef = useRef(ledger);
@@ -677,6 +781,11 @@ function App() {
   confirmIdsRef.current = confirmIds;
   const approveIdsRef = useRef(approveIds);
   approveIdsRef.current = approveIds;
+  // The key handler is bound once, so the row form reads the live typed values through refs too.
+  const draftsRef = useRef(drafts);
+  draftsRef.current = drafts;
+  const readingsRef = useRef(readings);
+  readingsRef.current = readings;
   function openGroup(group: Group, date = false) { setFocusDate(date); setEditingId(group.id); }
   function moveCursor(next: number | null) { cursorRef.current = next; setCursor(next); }
   useEffect(() => {
@@ -687,6 +796,14 @@ function App() {
     function onKey(event: KeyboardEvent) {
       if (tab !== "review" || editingId || event.metaKey || event.ctrlKey || event.altKey) return;
       const target = event.target as HTMLElement | null;
+      // Enter while a row's own field has focus commits that row, which is the keyboard loop most
+      // people want here: read the stamp, type over the half that is wrong, Enter, next row.
+      if (target?.tagName === "INPUT" && event.key === "Enter") {
+        const identity = target.closest("[data-group-id]")?.getAttribute("data-group-id");
+        const row = identity ? ledgerRef.current.find(group => group.id === identity) : undefined;
+        if (row) { event.preventDefault(); void saveReview(row); }
+        return;
+      }
       if (target && ["INPUT", "SELECT", "TEXTAREA"].includes(target.tagName)) return;
       const groups = ledgerRef.current;
       const index = cursorRef.current === null ? -1 : Math.min(cursorRef.current, Math.max(0, groups.length - 1));
@@ -748,6 +865,16 @@ function App() {
     if (!job) throw new Error("This group has no failed approval job to retry");
     await api(`/api/jobs/${job.id}/retry`);
     return `Requeued the approval job for ${groupTitle(group)}.`;
+  });
+  // The row form commits one ruling for the whole group: one call writes the typed timestamp to
+  // every page of the group and attests them, without re-splitting the group the way a per-page
+  // edit would.
+  const saveReview = (group: Group) => runOnGroup(group, async () => {
+    const draft = draftOf(group, readingsRef.current, draftsRef.current[group.id]);
+    if (!draft.date || !draft.time) throw new Error(`Enter both a date and a time for ${groupTitle(group)} before saving — the strip shows ${draft.date || draft.time || "neither"}.`);
+    const result = await api<{ pages: number }>("/api/receipts/apply-stamp",
+      { groups: { [group.id]: group.version }, date: draft.date, time: draft.time });
+    return `Saved ${draft.date} ${draft.time} on ${result.pages} page${result.pages === 1 ? "" : "s"} in ${groupTitle(group)} and attested them; approve it on the Approve tab.`;
   });
   function runFix(group: Group, fix: NonNullable<Fix>) {
     if (fix.kind === "confirm") return confirmGroup(group);
@@ -830,7 +957,10 @@ function App() {
           <span class="legend">J K step · Enter fix · O open · X date fix</span></div>}
         {ledger.length > 0 && <div class="ledger">{ledger.map((group, index) => <LedgerCell key={group.id} group={group} index={index}
           fix={primaryFix(group, state.jobs, confirmIds, approveIds)} focused={cursor === index} busy={quickBusy || busyGroups.has(group.id)}
-          edit={() => openGroup(group)} act={() => { const fix = primaryFix(group, state.jobs, confirmIds, approveIds); return fix ? runFix(group, fix) : Promise.resolve(); }} />)}</div>}
+          edit={() => openGroup(group)} act={() => { const fix = primaryFix(group, state.jobs, confirmIds, approveIds); return fix ? runFix(group, fix) : Promise.resolve(); }}
+          draft={draftOf(group, readings, drafts[group.id])} setDraft={(value, field) => setDrafts(previous =>
+            ({ ...previous, [group.id]: { ...draftOf(group, readings, drafts[group.id]), [field]: value } }))}
+          save={() => saveReview(group)} readings={readings} />)}</div>}
         {!ledger.length && <section class="empty">{reviewGroups.length
           ? <><h2>Nothing waits for judgment</h2><p>{approveLedger.length} settled {approveLedger.length === 1 ? "group is" : "groups are"} waiting on the Approve tab.</p></>
           : <><h2>Your staging area is ready</h2><p>Connect the scanner or import an unprocessed image to begin.</p></>}</section>}

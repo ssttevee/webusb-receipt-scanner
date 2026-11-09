@@ -20,7 +20,7 @@ from PIL import Image
 
 from .drive import Drive
 from .analysis_jobs import current_run, ensure_run, processing_active, queue_analysis, read_evidence, run_info
-from .models import AnalysisRequest, Approval, Attest, Capture, ConfirmProposed, Edit, Membership, Version
+from .models import AnalysisRequest, Approval, Attest, Capture, ConfirmProposed, Edit, Membership, Stamp, Version
 from .storage import Settings, Store, digest, durable_write, encode, ensure_directory, sync_directory
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -233,17 +233,21 @@ def create_app(settings=None, drive=None):
         return Response(buffer.getvalue(), media_type="image/png", headers={"X-Image-Height": str(master.height)})
 
     @app.get("/api/receipts/{identity}/timestamp-strip")
-    def timestamp_strip(identity: str):
+    def timestamp_strip(identity: str, candidate: str = ""):
         with store.transaction() as connection:
             receipt = receipt_row(connection, identity)
             evidence = json.loads(receipt["evidence"]) if receipt["evidence"] and receipt["master"] else None
         extraction = (evidence or {}).get("extraction") or {}
-        selected = extraction.get("selected")
-        candidate = next((item for item in extraction.get("candidates", [])
-                          if item.get("id") == (selected or {}).get("candidate_id")), None)
-        if not candidate or not candidate.get("box"):
+        if candidate:
+            chosen = next((item for item in extraction.get("candidates", []) if item.get("id") == candidate), None)
+            if not chosen:
+                fail("This page has no timestamp candidate with that identity", 404)
+        else:
+            chosen = next((item for item in extraction.get("candidates", [])
+                           if item.get("id") == (extraction.get("selected") or {}).get("candidate_id")), None)
+        if not chosen or not chosen.get("box"):
             fail("This page has no accepted OCR timestamp region to show", 404)
-        x0, y0, x1, y1 = candidate["box"]
+        x0, y0, x1, y1 = chosen["box"]
         with Image.open(receipt["master"]) as master:
             # The candidate box spans the master rows the accepted reading came from; pad by the
             # line height for context, then force bilevel so the strip reads like the paper.
@@ -255,6 +259,22 @@ def create_app(settings=None, drive=None):
             buffer = io.BytesIO()
             strip.save(buffer, format="PNG")
         return Response(buffer.getvalue(), media_type="image/png")
+
+    # ...and the candidates as text, so a Review row can show what each pass printed and start its
+    # form from the half the OCR did read. Cheap: one stored JSON document already in the row.
+    @app.get("/api/receipts/{identity}/timestamp-candidates")
+    def timestamp_candidates(identity: str):
+        with store.transaction() as connection:
+            receipt = receipt_row(connection, identity)
+            evidence = json.loads(receipt["evidence"]) if receipt["evidence"] and receipt["master"] else None
+        extraction = (evidence or {}).get("extraction")
+        if not extraction:
+            fail("This page has no timestamp evidence to show", 404)
+        return {"status": extraction.get("status"), "issues": extraction.get("issues") or [],
+                "candidates": [{"id": item.get("id"), "dates": item.get("dates") or [], "time": item.get("time"),
+                                "issues": item.get("issues") or [], "box": item.get("box"),
+                                "text": str((item.get("sources") or [{}])[0].get("text", "")).strip()[:80]}
+                               for item in (extraction.get("candidates") or [])[:4]]}
 
     @app.get("/api/receipts/{identity}/evidence")
     def evidence(identity: str, analysis_id: str | None = None):
@@ -344,6 +364,36 @@ def create_app(settings=None, drive=None):
                     store.changed(connection, receipt["group_id"]); touched.add(receipt["group_id"])
                 confirmed.append({"id": identity, "group_id": receipt["group_id"]})
         return {"confirmed": len(confirmed), "skipped": skipped, "groups": sorted(touched)}
+
+    @app.post("/api/receipts/apply-stamp")
+    def apply_stamp(change: Stamp):
+        # The review row's ruling, written across a whole group at once. Unlike the per-page edit
+        # endpoint, this never re-splits the group: the operator has ruled that every page of this
+        # receipt shares one printed timestamp, so keeping the group intact is the point of the call.
+        with store.transaction() as connection:
+            for identity, version in change.groups.items():
+                group_for_edit(connection, identity, version)
+            pages = 0
+            for identity in change.groups:
+                receipts = [dict(row) for row in connection.execute(
+                    "SELECT * FROM receipts WHERE group_id=? ORDER BY page_order", (identity,)).fetchall()]
+                if not receipts:
+                    fail("Group no longer exists; refresh", 404)
+                for receipt in receipts:
+                    if receipt["state"] != "ready":
+                        fail("Wait for image processing before writing a timestamp")
+                    if receipt["error"]:
+                        fail(f"Page {receipt['id'][:8]} has a scan error; open Details to resolve it")
+                    if (current_run(connection, receipt) or {"state": "ready"})["state"] in ("queued", "running"):
+                        fail("Wait for the current analysis before writing a timestamp")
+                    # A human ruling is final in both directions: it overwrites a stored proposal
+                    # and it attests the page, so Save clears the last two review flags at once.
+                    connection.execute("UPDATE receipts SET date=?,time=?,field_source='manual',timestamp_review=0,"
+                        "complete=1,readable=1,complete_source='operator',readable_source='operator' WHERE id=?",
+                        (change.date, change.time, receipt["id"]))
+                    pages += 1
+                store.changed(connection, identity)
+        return {"groups": sorted(change.groups), "pages": pages, "date": change.date, "time": change.time}
 
     @app.post("/api/receipts/{identity}")
     def edit(identity: str, change: Edit):

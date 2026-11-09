@@ -82,9 +82,25 @@ dialog.editor>.approval,dialog.editor>.muted{margin:0 18px 16px}
 .ledger-head .filter[aria-pressed=true]{background:#294550;border-color:#294550;color:white}
 .ledger-head .legend{margin-left:auto;font-size:.72rem;letter-spacing:.02em;color:#5d737d;text-transform:none}
 /* Review is now the small queue of groups needing judgment, not the wall of every staged scan, so the
-   ledger is a single column of roomy rows: full-word labels always fit and nothing ellipsizes. */
-.ledger{display:grid;grid-template-columns:minmax(0,1fr);gap:8px;align-content:start;max-width:1080px}
-.cell{display:grid;grid-template-columns:22px minmax(170px,auto) minmax(0,1fr) auto;align-items:center;gap:12px;height:46px;padding:0 14px;background:white;border:1px solid #d4dfe4;border-left:4px solid #9fb2ba;border-radius:8px;font-size:.9rem}
+   ledger is a single column of roomy rows: full-word labels always fit and nothing ellipsizes.
+   Every row uses the same five columns, so evidence, the ruling form and the verbs hold the same
+   x-positions all the way down the page — a long title or a third button in one row can never shove
+   its neighbours sideways, and each row sizes the form identically. */
+.ledger{display:grid;gap:10px;align-content:start;max-width:1180px}
+.cell{display:grid;grid-template-columns:22px 164px minmax(236px,1fr) minmax(306px,1fr) 254px;align-items:center;gap:10px;min-height:92px;padding:10px 14px;background:white;border:1px solid #d4dfe4;border-left:4px solid #9fb2ba;border-radius:8px;font-size:.9rem}
+/* Below a 1440 screen the five parts cannot share one line and keep the crops readable, so the row
+   folds: evidence and verbs on the top line, the ruling across the second, floors released. */
+@media(max-width:1439px){
+  .cell{grid-template-columns:22px 164px minmax(0,1fr) minmax(0,1fr) 254px;grid-template-rows:auto auto}
+  .cell>.glyph{grid-column:1/2;grid-row:1/3}
+  .cell>.ident{grid-column:2/3;grid-row:1/2}
+  .cell>.stamps{grid-column:3/5;grid-row:1/2}
+  .cell>.ruling{grid-column:2/5;grid-row:2/3}
+  .cell>.row-actions{grid-column:5/6;grid-row:1/3;justify-content:flex-end}
+}
+/* The queue column gives way before the ledger row does: a row that loses its crops or its fields is
+   useless, while a narrower scan list is still a scan list. */
+@media(max-width:1240px){main.app{grid-template-columns:264px minmax(0,1fr)}}
 .cell[data-severity=blocked]{background:var(--sev-blocked-bg);border-color:var(--sev-blocked-edge);border-left-color:var(--sev-blocked)}
 .cell[data-severity=pending]{background:var(--sev-pending-bg);border-color:var(--sev-pending-edge);border-left-color:var(--sev-pending)}
 .cell[data-severity=clear]{background:var(--sev-ready-bg);border-color:var(--sev-ready-edge);border-left-color:var(--sev-ready)}
@@ -93,23 +109,43 @@ dialog.editor>.approval,dialog.editor>.muted{margin:0 18px 16px}
 .cell[data-severity=pending] .glyph{background:var(--sev-pending)}
 .cell[data-severity=clear] .glyph{background:var(--sev-ready-bg);color:var(--sev-ready);border:1px solid var(--sev-ready-edge)}
 .cell .glyph.working{background:var(--sev-work-bg);color:var(--sev-work);border:1px solid #c4d9e8}
-.cell .ident{display:flex;align-items:center;gap:5px;min-width:0;padding:2px 0;font-size:.98rem;font-weight:650;font-variant-numeric:tabular-nums;background:none;border:0;cursor:pointer;color:#12242c}
+.cell .ident{display:flex;align-items:center;gap:5px;min-width:0;padding:2px 0;font-size:.98rem;font-weight:650;font-variant-numeric:tabular-nums;background:none;border:0;cursor:pointer;color:#12242c;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .cell .ident::before{content:"";flex:none;width:7px;height:7px;border:solid #294550;border-width:0 2px 2px 0;transform:rotate(-45deg)}
 .cell .ident em{font-style:normal;font-weight:400;color:#5d737d;font-size:.8rem}
 .cell .ident:hover em,.cell .ident:focus-visible{text-decoration:underline}
-.cell .fixes{display:flex;align-items:center;gap:7px;min-width:0;overflow:hidden;white-space:nowrap}
-.cell .fixes .pill{flex:0 1 auto;overflow:hidden;text-overflow:ellipsis;padding:3px 9px;font-size:.78rem;background:white}
+.cell .fixes{display:flex;align-items:center;gap:7px;min-width:0;flex-wrap:wrap}
+.cell .fixes .pill{flex:0 0 auto;padding:3px 9px;font-size:.78rem;background:white}
 .cell .fixes .pill.more{flex:none;background:#eef2f4;color:#51636d}
-.cell .act{width:auto;min-width:78px;height:30px;padding:0 12px;font-size:.85rem;font-weight:650;justify-self:end;color:white;background:#294550;border-color:#294550}
+.cell .act{width:auto;min-width:64px;height:30px;padding:0 9px;font-size:.8rem;font-weight:650;white-space:nowrap;justify-self:end;color:white;background:#294550;border-color:#294550}
 .cell .act.attest{background:var(--sev-blocked);border-color:var(--sev-blocked)}
 .cell .act.confirm{background:var(--sev-pending);border-color:var(--sev-pending)}
 .cell .act.approve{background:var(--sev-ready);border-color:var(--sev-ready)}
 .cell .act.retry{background:#5b3a86;border-color:#5b3a86}
+.cell .act.details{background:white;color:#294550;border-color:#c8d4da}
+/* Evidence, ruling, exit: the candidates OCR printed, the fields that fix them, the verbs that close.
+   Every slot is the same height whatever it holds — an accepted strip, two rival crops, a page corner
+   or a blank — so one row's evidence can't make it taller than its neighbours. */
+.cell .stamps{display:flex;align-items:flex-start;gap:8px;min-width:0}
+.cell .stamp-slot{display:flex;flex-direction:column;gap:3px;min-width:0;flex:1 1 0;height:64px}
+.cell .stamp-slot.blank{flex:none;width:110px;border:1px dashed #b9c6cd;border-radius:6px;background:#f2f5f6}
+.cell .stamp-slot small{flex:none;max-width:100%;font-size:.66rem;line-height:1.2;color:#5d737d;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
+.cell .stamp-strip{width:100%;flex:1 1 0;min-height:0;object-fit:contain;object-position:left center;background:#f2f5f6;border:1px solid #c8d4da;border-radius:6px}
+.cell .stamp-strip.page{width:44px;max-width:44px;object-fit:cover;object-position:bottom center}
+.cell .ruling{display:flex;flex-direction:column;gap:7px;min-width:0}
+.cell .fields{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.cell .fields label{display:flex;flex-direction:column;gap:2px;font-size:.62rem;letter-spacing:.06em;text-transform:uppercase;color:#5d737d}
+.cell .fields input{padding:4px 8px;font-family:inherit;font-size:.92rem;font-variant-numeric:tabular-nums;border:1px solid #c8d4da;border-radius:6px;background:white;color:#12242c}
+.cell .fields input:disabled{background:#eef2f4;color:#5d737d}
+.cell .stamp-date{width:140px}
+.cell .stamp-time{width:156px}
+.cell .row-actions{display:flex;align-items:center;gap:7px;justify-content:flex-end}
 .cell[data-focused]{outline:2px solid var(--sev-ready);outline-offset:1px}
 .approve-list{display:grid;gap:6px;align-content:start}
 .approve-row{display:grid;grid-template-columns:210px minmax(120px,1fr) auto;align-items:center;gap:14px;height:60px;padding:0 12px;background:white;border:1px solid #d4dfe4;border-left:4px solid var(--sev-ready);border-radius:8px}
 .approve-row .stamp-strip{width:210px;height:48px;object-fit:contain;object-position:left center;background:#f2f5f6;border:1px solid #c8d4da;border-radius:6px}
-.approve-row .stamp-fallback{display:block;width:210px;height:48px;background:#f2f5f6;border:1px dashed #c8d4da;border-radius:6px}
+.approve-row .stamp-slot{display:flex;flex-direction:column;gap:3px;min-width:0}
+.approve-row .stamp-slot small{display:none}
+.approve-row .stamp-slot.blank{width:210px;height:48px;background:#f2f5f6;border:1px dashed #c8d4da;border-radius:6px}
 .approve-row .stamp-meta{display:flex;align-items:baseline;gap:10px;min-width:0;margin:0;white-space:nowrap;overflow:hidden;font-size:.88rem;font-variant-numeric:tabular-nums;color:#12242c}
 .approve-row .stamp-meta strong{font-size:1.06rem;font-weight:700}
 .approve-row .stamp-meta em{font-style:normal;color:#5d737d;font-size:.76rem}

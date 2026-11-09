@@ -430,7 +430,9 @@ test("the ledger confirms a proposal-carrying page in one action and falls back 
     assert.equal(await proposalCell.getAttribute("data-severity"), "blocked");
     assert.match(await proposalCell.getAttribute("title"), /attest bottom · attest legible$/);
     assert.match(await proposalCell.locator(".act.confirm").getAttribute("aria-label"), /also attests bottom and legibility/);
-    assert.equal(await page.locator(".cell .act").count(), 1, "the undated group must not offer a fix the server would refuse");
+    assert.equal(await page.locator(".cell .act.confirm").count(), 1, "the undated group must not offer a fix the server would refuse");
+    assert.ok(await page.locator(`.cell[data-group-id="${blank.id}"] .act.save`).evaluate(button => button.disabled),
+      "an undated page can only be ruled by typing its stamp, so Save waits for both halves");
     // Type a review by hand without the checkboxes: the proposal is gone, so Confirm can no
     // longer reach this page and the ledger must fall back to attest.
     await page.getByRole("button", { name: `Edit group #${blank.id.slice(0, 8)}` }).click();
@@ -467,7 +469,7 @@ test("the ledger confirms a proposal-carrying page in one action and falls back 
     const proposalRow = page.locator(`.approve-row[data-group-id="${proposal.id}"]`);
     await proposalRow.waitFor({ timeout: 15000 });
     await page.waitForFunction(id => { const img = document.querySelector(`.approve-row[data-group-id="${id}"] img.stamp-strip`); return Boolean(img && img.complete && img.naturalWidth > 0); }, proposal.id, { timeout: 15000 });
-    await page.waitForFunction(id => Boolean(document.querySelector(`.approve-row[data-group-id="${id}"] .stamp-fallback`)), blank.id, { timeout: 15000 });
+    await page.waitForFunction(id => Boolean(document.querySelector(`.approve-row[data-group-id="${id}"] .stamp-slot.blank`)), blank.id, { timeout: 15000 });
     await proposalRow.getByRole("button", { name: "Approve 2026-09-14", exact: true }).click();
     await page.waitForFunction(id => !document.querySelector(`.approve-row[data-group-id="${id}"]`), proposal.id, { timeout: 30000 });
     await page.getByRole("tab", { name: /^Exports/ }).click();
@@ -588,7 +590,7 @@ test("the keyboard cursor steps the ledger and X opens the focused group with it
   }, false, true);
 });
 
-test("review rows keep one readable line and no full-word fix label truncates at laptop or desktop widths", {
+test("review rows show their timestamp evidence, prefilled fields and no truncated label at laptop or desktop widths", {
   timeout: 120000, skip: spawnSync("tesseract", ["--version"]).status !== 0,
 }, async () => {
   await environment(async ({ page }) => {
@@ -604,18 +606,92 @@ test("review rows keep one readable line and no full-word fix label truncates at
     }
     await page.waitForFunction(() => [...document.querySelectorAll(".cell .ident")].filter(ident => ident.textContent.includes("2026-09-14")).length === 4,
       null, { timeout: 90000 });
+    // The evidence column is lazy, so the strips load on demand and must arrive before layout is judged.
+    await page.waitForFunction(() => [...document.querySelectorAll(".cell")].every(cell => {
+      const images = [...cell.querySelectorAll(".stamp-strip")];
+      return images.length > 0 && images.every(img => img.complete && img.naturalWidth > 0);
+    }), null, { timeout: 20000 });
     for (const width of [1280, 1440]) {
       await page.setViewportSize({ width, height: 900 });
       await page.waitForTimeout(400);
       const fit = await page.evaluate(() => {
         const cells = [...document.querySelectorAll(".cell")];
+        const column = (cell, selector) => {
+          const node = cell.querySelector(selector);
+          return node ? Math.round(node.getBoundingClientRect().left) : null;
+        };
         return { cells: cells.length,
           heights: new Set(cells.map(cell => Math.round(cell.getBoundingClientRect().height))).size,
-          clipped: cells.flatMap(cell => [...cell.querySelectorAll(".fixes .pill")].filter(pill => pill.scrollWidth > pill.clientWidth + 1).map(pill => pill.textContent)),
-          tracks: getComputedStyle(document.querySelector(".ledger")).gridTemplateColumns.split(" ").length };
+          // Rows share their columns: evidence, the form and the exits hold the same x all the way down.
+          columns: [...new Set(cells.map(cell => [column(cell, ".stamp-slot"), column(cell, ".stamp-date"), column(cell, ".act.details")].join()))],
+          tracks: [...new Set(cells.map(cell => getComputedStyle(cell).gridTemplateColumns.split(" ").length))],
+          clipped: cells.flatMap(cell => [...cell.querySelectorAll(".fixes .pill, .stamp-slot small, .ident")].filter(item => item.scrollWidth > item.clientWidth + 1).map(item => item.textContent)),
+          // Every row carries the printed evidence, the ruling it starts from, and both exits.
+          evidence: cells.filter(cell => cell.querySelectorAll(".stamp-strip").length > 0).length,
+          prefilled: cells.filter(cell => cell.querySelector(".stamp-date")?.value === "2026-09-14"
+            && cell.querySelector(".stamp-time")?.value.startsWith("17:")).length,
+          verbs: cells.filter(cell => cell.querySelector(".act.save") && cell.querySelector(".act.details")).length };
       });
-      assert.deepEqual([fit.cells, fit.heights, fit.clipped], [4, 1, []], `at ${width}px`);
-      assert.equal(fit.tracks, 1, `at ${width}px`);
+      assert.deepEqual([fit.cells, fit.heights, fit.columns.length, fit.tracks, fit.clipped], [4, 1, 1, [5], []], `at ${width}px`);
+      assert.deepEqual([fit.evidence, fit.prefilled, fit.verbs], [4, 4, 4], `at ${width}px`);
     }
+  }, false, true);
+});
+
+test("a row whose scan never resolved a timestamp can be ruled from the row itself", {
+  timeout: 120000, skip: spawnSync("tesseract", ["--version"]).status !== 0,
+}, async () => {
+  await environment(async ({ page, origin }) => {
+    const png = await page.evaluate(() => {
+      const canvas = document.createElement("canvas"); canvas.width = 640; canvas.height = 1200;
+      const context = canvas.getContext("2d"); context.fillStyle = "white"; context.fillRect(0, 0, 640, 1200);
+      context.fillStyle = "black"; context.font = "32px sans-serif";
+      context.fillText("Self service", 30, 80); context.fillText("THANK YOU", 30, 150);
+      return canvas.toDataURL("image/png").split(",")[1];
+    });
+    await page.locator('input[type="file"]').setInputFiles({ name: "unreadable.png", mimeType: "image/png", buffer: Buffer.from(png, "base64") });
+    // Wait for the scan to finish processing: a row drawn mid-processing has no master to show yet,
+    // and its evidence slot is allowed to be blank until the page exists.
+    for (let attempt = 0; attempt < 250; attempt++) {
+      const receipts = (await (await page.request.get(`${origin}/api/state`)).json()).groups.flatMap(group => group.receipts);
+      if (receipts.length === 1 && receipts[0].state === "ready" && !["queued", "running"].includes(receipts[0].analysis?.state ?? "ready")) break;
+      await sleep(200);
+    }
+    await page.waitForFunction(() => document.querySelectorAll(".cell").length === 1, null, { timeout: 30000 });
+    // With no candidate to crop, the evidence slot falls back to the page preview and must paint it.
+    await page.waitForFunction(() => { const img = document.querySelector(".cell .stamp-strip"); return Boolean(img?.complete && img.naturalWidth > 0); },
+      null, { timeout: 15000 });
+    const cell = page.locator(".cell").first();
+    const identity = await cell.evaluate(node => node.getAttribute("data-group-id"));
+    // Nothing was read, so the form starts empty and refuses to save rather than invent a stamp.
+    const before = await page.evaluate(id => {
+      const row = document.querySelector(`.cell[data-group-id="${id}"]`);
+      return { date: row.querySelector(".stamp-date").value, time: row.querySelector(".stamp-time").value,
+        saveDisabled: row.querySelector(".act.save").disabled,
+        // With no candidate to crop, the evidence slot falls back to the page itself.
+        images: [...row.querySelectorAll(".stamp-strip")].map(img => img.getAttribute("src")) };
+    }, identity);
+    assert.deepEqual([before.date, before.time], ["", ""], "an unresolved page must not be prefilled with a guess");
+    assert.ok(before.saveDisabled, "Save waits until both halves are known");
+    assert.ok(before.images.some(src => src.endsWith("/image")), "the row still shows the page when no candidate region exists");
+    await cell.locator(".stamp-date").fill("2026-09-16");
+    await cell.locator(".stamp-time").fill("09:04:11");
+    // Enter in a row field commits that row: read, type, Enter, next row.
+    await page.locator(".cell .stamp-time").press("Enter");
+    await page.waitForFunction(() => document.querySelector('[role="status"]').textContent.includes("Saved 2026-09-16 09:04:11"), null, { timeout: 15000 });
+    await page.waitForFunction(id => !document.querySelector(`.cell[data-group-id="${id}"]`), identity, { timeout: 15000 });
+    const saved = await (await page.request.get(`${origin}/api/state`)).json();
+    const group = saved.groups.find(item => item.id === identity);
+    const [page1] = group.receipts;
+    assert.deepEqual([page1.date, page1.time], ["2026-09-16", "09:04:11"]);
+    assert.equal(page1.field_source, "manual");
+    assert.equal(page1.timestamp_review, 0);
+    assert.ok(page1.complete && page1.readable, "the ruling attests the page it writes, as the quick path does");
+    assert.equal(page1.complete_source, "operator");
+    // Settled, it waits on the Approve tab with the page it was ruled from beside it.
+    await page.getByRole("tab", { name: /^Approve/ }).click();
+    await page.waitForFunction(id => Boolean(document.querySelector(`.approve-row[data-group-id="${id}"]`)), identity, { timeout: 15000 });
+    await page.getByRole("button", { name: "Approve 2026-09-16", exact: true }).click();
+    await page.waitForFunction(id => !document.querySelector(`.approve-row[data-group-id="${id}"]`), identity, { timeout: 30000 });
   }, false, true);
 });

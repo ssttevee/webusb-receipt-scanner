@@ -86,6 +86,20 @@ class Attest(Model):
     readable: bool
 
 
+class Stamp(Model):
+    groups: dict[str, int] = Field(min_length=1, max_length=100)
+    date: str
+    time: str
+
+    @model_validator(mode="after")
+    def calendar(self):
+        if len(self.date) != 10 or Date.fromisoformat(self.date).isoformat() != self.date:
+            raise ValueError("Use YYYY-MM-DD")
+        if len(self.time) not in (5, 8) or Time.fromisoformat(self.time).isoformat()[:len(self.time)] != self.time:
+            raise ValueError("Use HH:MM or HH:MM:SS")
+        return self
+
+
 class ConfirmProposed(Model):
     groups: dict[str, int] = Field(min_length=1, max_length=100)
     receipt_ids: list[str] = Field(min_length=1, max_length=500)
