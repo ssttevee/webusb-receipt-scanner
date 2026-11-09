@@ -97,8 +97,8 @@ def create_app(settings=None, drive=None):
     @app.get("/api/health")
     def health():
         with store.transaction() as connection:
-            connection.execute("SELECT 1").fetchone()
-        return {"ok": True, "schema": 3, "driver_ready": (ROOT / "scanner-driver/build/provenance.json").exists(),
+            schema = connection.execute("PRAGMA user_version").fetchone()[0]
+        return {"ok": True, "schema": schema, "driver_ready": (ROOT / "scanner-driver/build/provenance.json").exists(),
                 "free_work_bytes": shutil.disk_usage(settings.work).free, "ocr_enabled": settings.ocr,
                 "ocr_backend": settings.ocr_backend, "ocr_fallback": settings.ocr_fallback,
                 "fallback_timeout_seconds": settings.fallback_timeout}

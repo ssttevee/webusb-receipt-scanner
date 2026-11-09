@@ -62,6 +62,8 @@ def test_origin_boundary_and_incomplete_rejection(runtime):
     client, store = runtime
     assert client.post("/api/captures", json={}, headers={"Origin": "https://outside.example"}).status_code == 403
     assert client.get("/api/health", headers={"Host": "outside.example"}).status_code == 403
+    # Health reports the database's own ladder value, so the two can never disagree.
+    assert client.get("/api/health").json()["schema"] == 4
     assert client.get("/").headers["Cross-Origin-Embedder-Policy"] == "require-corp"
     oversized = client.post("/api/captures", content=b"x" * (1048576 + 1))
     assert oversized.status_code == 413
