@@ -181,6 +181,36 @@ def test_single_ocr_pass_does_not_propose_plausible_unverified_date():
     assert agreed["selected"]["date"] == "2028-08-03"
 
 
+def test_later_unpaired_clock_cannot_veto_a_clean_corroborated_timestamp():
+    # The live Costco failure: the auth line read clean in both passes, while a lower line's
+    # date garbled into "4026-10 /DE" leaving only its clock. That clock loses on its printed
+    # face (same minute, later seconds), so it could never have won the earliest-timestamp
+    # policy however its date resolved, and must not block the proposal.
+    auth = [Line("AUTH # ESI 2026-10-06 16:47:36", (44, 1657, 602, 1681), 75, "discovery"),
+            Line("AUTH #: SEOS9J 2026-10-06 16:47:36", (44, 1657, 602, 1681), 76, "tile-01")]
+    stray = Line("4026-10 /DE 16:47:39 548 206 272 706", (44, 2368, 557, 2408), 71, "discovery")
+    result = extract_ocr([*auth, stray])
+    assert result["status"] == "proposed"
+    assert (result["selected"]["date"], result["selected"]["time"]) == ("2026-10-06", "16:47:36")
+    assert result["selected"]["support"] == "two_ocr_passes"
+    # The association gap stays on the record even though it no longer blocks.
+    assert "date_time_association_unresolved" in result["issues"]
+    later_minute = extract_ocr([*auth, Line("4026-10 /DE 17:02:00 548 206", (44, 2368, 557, 2408), 71, "discovery")])
+    assert later_minute["selected"]["time"] == "16:47:36"
+
+
+def test_earlier_or_equal_unpaired_clock_still_requires_review():
+    auth = [Line("AUTH # ESI 2026-10-06 16:47:36", (44, 1657, 602, 1681), 75, "discovery"),
+            Line("AUTH #: SEOS9J 2026-10-06 16:47:36", (44, 1657, 602, 1681), 76, "tile-01")]
+    earlier = extract_ocr([*auth, Line("4026-10 /DE 16:47:20 548 206", (44, 2368, 557, 2408), 71, "discovery")])
+    assert earlier["selected"] is None and "date_time_association_unresolved" in earlier["issues"]
+    # A minute-precision stray covers seconds it never printed, so it can win the minute.
+    vague = extract_ocr([*auth, Line("4026-10 /DE 16:47", (44, 2368, 557, 2408), 71, "discovery")])
+    assert vague["selected"] is None
+    tied = extract_ocr([*auth, Line("4026-10 /DE 16:47:36", (44, 2368, 557, 2408), 71, "discovery")])
+    assert tied["selected"] is None
+
+
 def test_tsv_literal_quotes_and_disjoint_blocks_map_to_original_coordinates():
     header = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n"
     words = "5\t1\t1\t1\t1\t1\t5\t5\t10\t10\t90\t\"\n5\t1\t2\t1\t1\t1\t10\t30\t90\t20\t90\t2026-09-14\n5\t1\t3\t1\t1\t1\t200\t31\t90\t20\t90\t17:21\n"

@@ -5,7 +5,7 @@ import hashlib
 import re
 import unicodedata
 
-VERSION = "timestamp-evidence-v3"
+VERSION = "timestamp-evidence-v4"
 
 
 @dataclass
@@ -298,13 +298,28 @@ def extract(lines, *, date_order=None, century=None, expected_month=None, requir
         issues.update(candidate["issues"])
     selected = None
     eligible = [candidate for candidate in complete if len(candidate["dates"]) == 1 and not candidate["issues"]]
-    # A transaction-like clock without an evidenced date still needs review.
-    blockers = issues
+    minute = min((candidate["dates"][0] + "T" + candidate["time"][:5] for candidate in eligible), default=None)
+    earliest = [candidate for candidate in eligible if candidate["dates"][0] + "T" + candidate["time"][:5] == minute] if minute else []
+    precise = [candidate for candidate in earliest if candidate["precision"] == "second"]
+    chosen = min(precise or earliest, key=lambda candidate: candidate["time"]) if earliest else None
+    # A transaction-like clock without an evidenced date blocks only while it could still
+    # change the ruling. The policy keeps the earliest timestamp, so an unpaired clock that
+    # loses on its printed face — a strictly later minute, or the same minute losing on
+    # seconds against a second-precision winner — could not have displaced the winner
+    # however its unreadable date resolved on the receipt's shared day, and must not veto
+    # it. A clock earlier than or tied with the winner keeps the veto: there the missing
+    # date is exactly the risk, and a minute-precision stray covers seconds it never shows.
+    def veto(candidate):
+        remaining = set(candidate["issues"])
+        if chosen and not candidate["dates"] and remaining == {"date_time_association_unresolved"}:
+            if candidate["time"][:5] > chosen["time"][:5]:
+                remaining.clear()
+            elif (candidate["time"][:5] == chosen["time"][:5] and candidate["precision"] == chosen["precision"] == "second"
+                  and candidate["time"] > chosen["time"]):
+                remaining.clear()
+        return remaining
+    blockers = set().union(*(veto(candidate) for candidate in candidates))
     if eligible and not blockers:
-        minute = min(candidate["dates"][0] + "T" + candidate["time"][:5] for candidate in eligible)
-        earliest = [candidate for candidate in eligible if candidate["dates"][0] + "T" + candidate["time"][:5] == minute]
-        precise = [candidate for candidate in earliest if candidate["precision"] == "second"]
-        chosen = min(precise or earliest, key=lambda candidate: candidate["time"])
         supporting = [candidate for candidate in earliest if not candidate.get("resolution") and
                       (candidate["time"] == chosen["time"] or len(candidate["time"]) == 5 or len(chosen["time"]) == 5)]
         passes = {source["pass"] for candidate in supporting for source in candidate["sources"]}
