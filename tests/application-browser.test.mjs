@@ -653,6 +653,39 @@ test("review rows show their timestamp evidence, prefilled fields and no truncat
   }, false, true);
 });
 
+test("the details dialog can re-read a wider stamp window and offer exactly what it reads", {
+  timeout: 120000, skip: spawnSync("tesseract", ["--version"]).status !== 0,
+}, async () => {
+  await environment(async ({ page }) => {
+    const png = await page.evaluate(() => {
+      const canvas = document.createElement("canvas"); canvas.width = 640; canvas.height = 1200;
+      const context = canvas.getContext("2d"); context.fillStyle = "white"; context.fillRect(0, 0, 640, 1200);
+      context.fillStyle = "black"; context.font = "32px sans-serif";
+      context.fillText("Transaction", 30, 80); context.fillText("2026-09-14 17:21:30", 30, 150);
+      context.fillText("THANK YOU", 30, 1150);
+      return canvas.toDataURL("image/png").split(",")[1];
+    });
+    await page.locator('input[type="file"]').setInputFiles({ name: "recrop.png", mimeType: "image/png", buffer: Buffer.from(png, "base64") });
+    await page.waitForFunction(() => document.querySelector(".cell .stamp-date")?.value === "2026-09-14", null, { timeout: 90000 });
+    await openEditor(page);
+    await page.getByRole("button", { name: "Recheck window" }).click({ timeout: 30000 });
+    await page.waitForSelector(".recrop-lines button", { timeout: 30000 });
+    const offers = await page.locator(".recrop-lines button").allTextContents();
+    assert(offers.some(offer => offer.includes("2026-09-14") && offer.includes("17:21:30")),
+      `the wider re-read must offer the stamp it re-read, got: ${offers.join(" | ")}`);
+    // Using a result only fills the local fields: the page stays dirty until Save review, so a
+    // recheck can never rule a scan on its own.
+    await page.locator(".recrop-lines button").first().click();
+    assert.equal(await page.locator(".editor input[type=\"date\"]").first().inputValue(), "2026-09-14");
+    assert.equal(await page.locator(".editor input[type=\"time\"]").first().inputValue(), "17:21:30");
+    await page.waitForFunction(() => [...document.querySelectorAll(".editor p.muted")]
+      .some(p => p.textContent.includes("Save or reload local field edits")), null, { timeout: 5000 });
+    await page.getByRole("button", { name: "Save review" }).first().click();
+    await page.waitForFunction(() => ![...document.querySelectorAll(".editor p.muted")]
+      .some(p => p.textContent.includes("Save or reload local field edits")), null, { timeout: 30000 });
+  }, false, true);
+});
+
 test("a row whose scan never resolved a timestamp can be ruled from the row itself", {
   timeout: 120000, skip: spawnSync("tesseract", ["--version"]).status !== 0,
 }, async () => {

@@ -7,12 +7,14 @@ import os
 from pathlib import Path
 import secrets
 import shutil
+import subprocess
 import tempfile
 import time
 from urllib.parse import urlsplit
 import uuid
 
 import httpx
+import numpy as np
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -20,7 +22,8 @@ from PIL import Image
 
 from .drive import Drive
 from .analysis_jobs import current_run, ensure_run, processing_active, queue_analysis, read_evidence, run_info
-from .models import AnalysisRequest, Approval, Attest, Capture, ConfirmProposed, Edit, Membership, Stamp, Version
+from .extraction import dates, times
+from .models import AnalysisRequest, Approval, Attest, Capture, ConfirmProposed, Edit, Membership, Recrop, Stamp, Version
 from .storage import Settings, Store, digest, durable_write, encode, ensure_directory, sync_directory
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -259,6 +262,63 @@ def create_app(settings=None, drive=None):
             buffer = io.BytesIO()
             strip.save(buffer, format="PNG")
         return Response(buffer.getvalue(), media_type="image/png")
+
+    @app.post("/api/receipts/{identity}/recrop")
+    def recrop_stamp(identity: str, recrop: Recrop):
+        # A cheap re-read of an already-fetched page crop: widen the printed timestamp window,
+        # blur the broken dot-matrix strokes, OCR once, then run the same date and time readers
+        # the page pass uses over the result. It answers "what did the crop window miss?" without
+        # a full page pass and without writing anything: what comes back is only a proposal.
+        box = recrop.box
+        expand = recrop.expand
+        with store.transaction() as connection:
+            receipt = receipt_row(connection, identity)
+        if not receipt["master"]:
+            fail("This page has no master image yet", 409)
+        with Image.open(receipt["master"]) as master:
+            master = master.convert("L")
+            x0, y0, x1, y1 = (int(value) for value in box)
+            margin = max(12, int(max(x1 - x0, y1 - y0) * expand))
+            crop = master.crop((max(0, x0 - margin), max(0, y0 - margin),
+                                min(master.width, x1 + margin), min(master.height, y1 + margin)))
+        if crop.width < 24 or crop.height < 12:
+            fail("That region is too small to read")
+        # One mean pass steadies dotted strokes the way the page pass's discovery blur does.
+        pixels = np.pad(np.asarray(crop, dtype=np.float32), 1, mode="edge")
+        kernel = np.ones(3, dtype=np.float32) / 3.0
+        blurred = np.apply_along_axis(lambda line: np.convolve(line, kernel, mode="same"), 1, pixels)
+        blurred = np.apply_along_axis(lambda line: np.convolve(line, kernel, mode="same"), 0, blurred)
+        blurred = np.clip(blurred[1:-1, 1:-1], 0.0, 255.0)
+        buffer = io.BytesIO()
+        Image.fromarray(np.uint8(blurred)).save(buffer, format="PNG")
+        languages = json.loads(receipt["languages"]) if receipt["languages"] else ["eng"]
+        profile = [language for language in languages if language in ("eng", "fra", "jpn", "chi_tra", "chi_sim")] or ["eng"]
+        try:
+            result = subprocess.run(["tesseract", "stdin", "stdout", "--dpi", "200",
+                                     "-l", "+".join(profile), "--psm", "6", "text"],
+                                    input=buffer.getvalue(), capture_output=True, timeout=25,
+                                    env={**os.environ, "OMP_THREAD_LIMIT": "2"})
+        except FileNotFoundError:
+            fail("Recheck OCR is unavailable on this service", 503)
+        except subprocess.TimeoutExpired:
+            fail("The recheck read took too long", 503)
+        if result.returncode:
+            fail("The recheck read failed", 503)
+        text = result.stdout.decode("utf-8", "replace")
+        lines = []
+        for raw_line in text.splitlines():
+            if not raw_line.strip():
+                continue
+            found_dates = dates(raw_line)
+            found_times = times(raw_line, [item["span"] for item in found_dates])
+            if not found_dates and not found_times:
+                continue
+            lines.append({"text": raw_line.strip(),
+                          "dates": [{"raw": item["raw"], "values": item["values"], "issues": item["issues"]}
+                                    for item in found_dates],
+                          "times": [{"raw": item["raw"], "value": item["value"], "issues": item["issues"]}
+                                    for item in found_times]})
+        return {"lines": lines}
 
     # ...and the candidates as text, so a Review row can show what each pass printed and start its
     # form from the half the OCR did read. Cheap: one stored JSON document already in the row.

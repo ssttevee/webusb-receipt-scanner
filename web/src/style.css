@@ -59,6 +59,12 @@ fieldset{border:0;padding:0;margin:0}
 .analysis-controls{margin-top:10px}
 pre{max-height:300px;overflow:auto;white-space:pre-wrap;font-size:.75rem;overflow-wrap:anywhere}
 summary{cursor:pointer;font-weight:600;margin:8px 0}
+/* Recheck results are proposals, so they read like the source they came from: the raw OCR line
+   and a Use button per date × time the readers could pair from it. */
+.recrop{display:flex;flex-wrap:wrap;align-items:center;gap:7px;margin:10px 0 0}
+.recrop-lines{list-style:none;display:grid;gap:5px;margin:8px 0 0;padding:0;flex-basis:100%}
+.recrop-lines li{display:flex;flex-wrap:wrap;align-items:center;gap:7px}
+.recrop-lines code{background:#eef2f4;border:1px solid #d4dfe4;border-radius:5px;padding:2px 7px;font-variant-numeric:tabular-nums}
 .approval{margin-top:14px;padding:14px;background:#eff5f1;border-radius:8px;overflow-wrap:anywhere}
 .empty{text-align:center;padding:40px 24px}
 .jobs p{padding:8px 0;border-bottom:1px solid #d4dfe4}

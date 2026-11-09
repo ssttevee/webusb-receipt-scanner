@@ -26,6 +26,18 @@ type StampCandidate = { id: string; dates: string[]; time: string | null; issues
 type StampReading = { status: string; issues: string[]; candidates: StampCandidate[] };
 type Candidate = { id: string; dates: string[]; time: string | null; issues: string[];
   sources: { text: string; box: number[]; ocr_confidence: number; pass: string }[] };
+// What a wider-window re-read of one printed region comes back with: raw lines and the same
+// date/time readers the page pass runs, so a recheck can only ever surface what OCR printed.
+type RecropLine = { text: string; dates: { raw: string; values: string[]; issues: string[] }[];
+  times: { raw: string; value: string | null; issues: string[] }[] };
+function recropStamps(line: RecropLine): [string, string][] {
+  const days = line.dates.flatMap(item => item.values);
+  const clocks = line.times.map(item => item.value).filter((value): value is string => Boolean(value));
+  const pairs = days.length && clocks.length
+    ? days.flatMap(day => clocks.map(clock => [day, clock] as [string, string]))
+    : [...days.map(day => [day, ""] as [string, string]), ...clocks.map(clock => ["", clock] as [string, string])];
+  return pairs.slice(0, 8);
+}
 type Extraction = { version: string; status: string; issues: string[]; selected: { date: string; time: string } | null; candidates: Candidate[];
   routing?: { selected_engine: string | null; primary_issues: string[] } };
 type FallbackInfo = { state: string; reason: string | null; seconds: number };
@@ -186,6 +198,27 @@ function ReceiptEditor({ receipt, group, refresh, selected, select, report, onDi
   useEffect(() => () => onDirty(receipt.id, false), [receipt.id, onDirty]);
   const stale = baseVersion !== group.version;
   function showInspection() { inspectionRef.current?.showModal(); }
+  // A recheck answers "what did the crop window miss?": it widens the printed timestamp region on
+  // the master, blurs broken strokes once, and re-OCR's only that window. Nothing is written —
+  // every returned line is a proposal the operator chooses to use.
+  const [recrop, setRecrop] = useState<{ lines: RecropLine[] } | null>(null);
+  const [recropBusy, setRecropBusy] = useState(false);
+  const stampBox = (() => {
+    const candidates = extraction?.candidates ?? [];
+    const chosen = candidates.find(candidate => extraction?.selected
+      && candidate.dates.includes(extraction.selected.date) && candidate.time === extraction.selected.time)
+      ?? candidates[0];
+    const boxes = (chosen?.sources ?? []).map(source => source.box).filter(box => box.length === 4);
+    if (!boxes.length) return null;
+    return [Math.min(...boxes.map(box => box[0])), Math.min(...boxes.map(box => box[1])),
+      Math.max(...boxes.map(box => box[2])), Math.max(...boxes.map(box => box[3]))];
+  })();
+  async function recheck(expand: number) {
+    if (!stampBox) return;
+    setRecropBusy(true);
+    try { setRecrop(await api<{ lines: RecropLine[] }>(`/api/receipts/${receipt.id}/recrop`, { box: stampBox, expand })); }
+    catch (error) { report(String(error)); } finally { setRecropBusy(false); }
+  }
   useEffect(() => {
     if (receipt.state !== "ready") return;
     if (!dirty && (!receipt.analysis || ["ready", "failed"].includes(receipt.analysis.state))) {
@@ -229,6 +262,25 @@ function ReceiptEditor({ receipt, group, refresh, selected, select, report, onDi
           </div>)}
         </div>)}
       </details>
+      {editable && <div class="recrop">
+        <button class="secondary" disabled={recropBusy || !stampBox} onClick={() => recheck(0.25)}
+          title="Widen the printed timestamp window on the master, blur the broken strokes and read it again. Nothing is saved until you choose a result."
+          >Recheck window</button>
+        <button class="secondary" disabled={recropBusy || !stampBox} onClick={() => recheck(0.6)}
+          title="A wider re-read for dates spelled in words (OCT 6 2026) printed near but not inside the timestamp"
+          >Read spelled dates</button>
+        {recropBusy && <span class="muted">Re-reading the wider window…</span>}
+        {!stampBox && !recropBusy && <span class="muted">No printed timestamp region to widen; read the inspection strips instead.</span>}
+        {recrop && !recropBusy && (recrop.lines.length ? <ul class="recrop-lines">{recrop.lines.map(line => <li key={line.text}>
+          <code>{line.text}</code>
+          {recropStamps(line).map(([day, clock]) => <button class="secondary" key={`${day} ${clock}`} onClick={() => {
+            if (day) setDate(day);
+            if (clock) setClock(clock);
+            setDirty(true);
+          }}>Use {day ? `${day}${clock ? ` ${clock}` : ""}` : clock}</button>)}
+        </li>)}</ul>
+          : <p class="muted">The wider window still reads no date or time. Widen further from the inspection strips.</p>)}
+      </div>}
       {extraction.selected && editable && <button class="secondary" onClick={() => {
         setDate(extraction.selected!.date); setClock(extraction.selected!.time); setDirty(true);
       }}>Use proposed timestamp</button>}
