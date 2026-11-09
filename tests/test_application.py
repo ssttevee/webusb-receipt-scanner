@@ -890,6 +890,33 @@ def test_stamp_variant_previews_and_the_operator_chooses_processing_in_both_dire
         assert connection.execute("SELECT binarization FROM receipts WHERE id=?", (identity,)).fetchone()[0] is None
 
 
+def test_image_render_toggle_previews_the_page_the_approved_export_will_make(runtime):
+    import numpy as np
+    from server.enhance import enhanced_array, trimmed_gray
+    client, store = runtime
+    manifest, _ = capture(client, store)
+    identity = manifest["id"]
+    assert client.get(f"/api/receipts/{identity}/image?render=bogus").status_code == 422
+    raw = client.get(f"/api/receipts/{identity}/image?top=0")
+    final = client.get(f"/api/receipts/{identity}/image?top=0&render=final")
+    assert final.status_code == 200 and final.content[:4] == b"\x89PNG"
+    assert final.headers["x-image-height"] == raw.headers["x-image-height"]  # nothing is trimmed off this fixture
+    with store.transaction() as connection:
+        master = connection.execute("SELECT master FROM receipts WHERE id=?", (identity,)).fetchone()[0]
+    expected = enhanced_array(trimmed_gray(master))  # no operator choice yet: the machine default
+    pixels = np.asarray(Image.open(io.BytesIO(final.content)).convert("L"))
+    assert np.array_equal(pixels, expected[:pixels.shape[0]])  # the strip is the export page's top rows
+    assert set(np.unique(pixels)) <= {0, 255}  # bilevel, like every approval PDF page
+    seed_ranking(store, identity)
+    group = next(g for g in state(client)["groups"] if any(r["id"] == identity for r in g["receipts"]))
+    assert client.post(f"/api/receipts/{identity}/binarization", json={"variant": "otsu", "version": group["version"]}).status_code == 200
+    chosen = client.get(f"/api/receipts/{identity}/image?top=0&render=final")
+    pixels = np.asarray(Image.open(io.BytesIO(chosen.content)).convert("L"))
+    assert np.array_equal(pixels, enhanced_array(trimmed_gray(master), "otsu")[:pixels.shape[0]])  # honours the operator
+    full = client.get(f"/api/receipts/{identity}/image?render=final")  # and the whole page without a strip window
+    assert full.status_code == 200 and full.content[:4] == b"\x89PNG"
+
+
 def test_binarization_choice_stops_once_approval_starts(runtime):
     client, store = runtime
     manifest, _ = capture(client, store)

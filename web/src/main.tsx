@@ -194,6 +194,9 @@ function ReceiptEditor({ receipt, group, refresh, selected, select, report, onDi
   const inspectionRef = useRef<HTMLDialogElement>(null);
   const [row, setRow] = useState(0);
   const [height, setHeight] = useState(512);
+  // The page image is worth seeing both ways: what the scanner printed, and what the approved
+  // PDF will actually archive. The endpoint renders both from the same page pipeline.
+  const [render, setRender] = useState<"raw" | "final">("raw");
   const [evidence, setEvidence] = useState<unknown>(null);
   const [extraction, setExtraction] = useState<Extraction | null>(null);
   const [ranking, setRanking] = useState<BinarizationRanking | null>(null);
@@ -377,8 +380,15 @@ function ReceiptEditor({ receipt, group, refresh, selected, select, report, onDi
         <div class="row"><button disabled={row === 0} onClick={() => setRow(Math.max(0, row - 512))}>Previous strip</button>
           <label>Starting row<input type="number" min="0" max={height - 1} value={row} onInput={event => setRow(Math.max(0, Math.min(height - 1, Number(event.currentTarget.value))))} /></label>
           <button disabled={row + 512 >= height} onClick={() => setRow(row + 512)}>Next strip</button>
-          <button onClick={() => setRow(Math.max(0, height - 512))}>Physical bottom</button></div>
-        <div class="strip"><img src={`/api/receipts/${receipt.id}/image?top=${row}`} alt={`Full-resolution rows ${row}–${Math.min(row + 512, height)}`} /></div>
+          <button onClick={() => setRow(Math.max(0, height - 512))}>Physical bottom</button>
+          <span class="render-toggle" role="group" aria-label="Which image to show">
+            <button aria-pressed={render === "raw"} class={render === "raw" ? "" : "secondary"} onClick={() => setRender("raw")}
+              title="The lossless scan exactly as captured">Raw scan</button>
+            <button aria-pressed={render === "final"} class={render === "final" ? "" : "secondary"} onClick={() => setRender("final")}
+              title="The page as the approved PDF exports it: blank-feed and dark-edge trim, then this page's chosen stamp processing">Final binarized</button>
+          </span></div>
+        <div class="strip"><img src={`/api/receipts/${receipt.id}/image?top=${row}${render === "final" ? "&render=final" : ""}`}
+          alt={`Full-resolution ${render === "final" ? "binarized export" : "raw scan"} rows ${row}–${Math.min(row + 512, height)}`} /></div>
         <details><summary>Unvalidated local OCR evidence</summary><pre>{JSON.stringify(evidence, null, 2)}</pre></details>
       </section>
     </dialog>

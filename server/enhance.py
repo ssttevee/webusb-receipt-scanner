@@ -57,19 +57,33 @@ def binarize(gray, window=51, k=0.34, dynamic_range=128.0):
     return gray > mean * (1.0 + k * (deviation / dynamic_range - 1.0))
 
 
-def enhanced_page(source, dpi=None, recipe="sauvola"):
-    # Only recipes that produce a black-and-white image are honoured for whole pages: the operator's
-    # choice was judged on one small printed region, and the approval PDF's pages must stay bilevel.
-    # Grayscale-oriented recipes (reference, stretched) therefore keep the established default.
-    from .binarize import apply_recipe
+def trimmed_gray(source):
+    """A scan's printable area as 8-bit pixels: blank-feed bottom and dark-edge suffix removed,
+    the same trim the approved PDF performs."""
     source = Path(source)
     with Image.open(source) as opened:
-        dpi = tuple(dpi or opened.info.get("dpi") or (200.0, 200.0))
         gray = np.asarray(opened.convert("L"))
     gray = trim_right(trim_bottom(gray))
     if not gray.size:
         raise ValueError(f"Scan {source} has no printable area after cropping")
-    pixels = apply_recipe(recipe if recipe in ("sauvola", "otsu") else "sauvola", gray)
+    return gray
+
+
+def enhanced_array(gray, recipe="sauvola"):
+    """The trimmed page through the recipe the export honours. Only recipes that produce a
+    black-and-white image count: the operator's choice was judged on one small printed region,
+    and the approval PDF's pages must stay bilevel - grayscale-oriented recipes (reference,
+    stretched) therefore keep the established default. Export and preview share this call so a
+    preview can never promise a page the approved PDF won't make."""
+    from .binarize import apply_recipe
+    return apply_recipe(recipe if recipe in ("sauvola", "otsu") else "sauvola", gray)
+
+
+def enhanced_page(source, dpi=None, recipe="sauvola"):
+    source = Path(source)
+    with Image.open(source) as opened:
+        dpi = tuple(dpi or opened.info.get("dpi") or (200.0, 200.0))
+    pixels = enhanced_array(trimmed_gray(source), recipe)
     binary = Image.fromarray(pixels, mode="L")
     binary = binary.convert("1", dither=Image.Dither.NONE)
     buffer = io.BytesIO()

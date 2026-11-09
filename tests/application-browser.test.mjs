@@ -95,6 +95,19 @@ test("browser queue survives a lost acknowledgment and reload, then review/appro
     await page.getByRole("button", { name: "Inspect full-resolution strips & OCR" }).click();
     await page.getByRole("button", { name: "Physical bottom", exact: true }).click();
     await page.waitForFunction(() => document.querySelector(".strip img")?.complete && document.querySelector(".strip img").naturalWidth === 640);
+    // The same window, rendered as the approved PDF will archive it: bilevel, trimmed, honouring
+    // the page's chosen stamp processing. The toggle must swap pixels without losing the row.
+    await page.getByRole("button", { name: "Final binarized", exact: true }).click();
+    await page.waitForFunction(() => document.querySelector(".strip img")?.src.includes("render=final")
+      && document.querySelector(".strip img").complete && document.querySelector(".strip img").naturalWidth > 0);
+    assert.equal(await page.evaluate(() => document.querySelector(".strip img").alt.includes("binarized export")), true);
+    assert.equal(await page.getByRole("button", { name: "Raw scan", exact: true }).getAttribute("aria-pressed"), "false");
+    assert.equal(await page.getByRole("button", { name: "Final binarized", exact: true }).getAttribute("aria-pressed"), "true");
+    const binarizedRow = await page.evaluate(() => new URL(document.querySelector(".strip img").src).searchParams.get("top"));
+    await page.getByRole("button", { name: "Raw scan", exact: true }).click();
+    await page.waitForFunction(row => { const img = document.querySelector(".strip img");
+      return !img.src.includes("render=final") && img.complete && img.naturalWidth === 640
+        && new URL(img.src).searchParams.get("top") === row; }, binarizedRow);
     await page.getByRole("button", { name: "Close inspection", exact: true }).click();
     await page.getByRole("button", { name: "Prepare approval", exact: true }).click();
     await page.getByRole("button", { name: "Approve this version", exact: true }).waitFor();

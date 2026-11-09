@@ -23,6 +23,7 @@ from PIL import Image
 from .drive import Drive
 from .analysis_jobs import current_run, ensure_run, processing_active, queue_analysis, read_evidence, run_info
 from .binarize import apply_recipe, png as recipe_png
+from .enhance import enhanced_array, trimmed_gray
 from .extraction import dates, times
 from .models import AnalysisRequest, Approval, Attest, Binarization, Capture, ConfirmProposed, Edit, Membership, Recrop, Stamp, Version
 from .storage import Settings, Store, digest, durable_write, encode, ensure_directory, sync_directory
@@ -221,11 +222,32 @@ def create_app(settings=None, drive=None):
                 "analysis_defaults": {"date_order": settings.date_order, "century": settings.year_century}}
 
     @app.get("/api/receipts/{identity}/image")
-    def image(identity: str, top: int | None = None):
+    def image(identity: str, top: int | None = None, render: str = "raw"):
         with store.transaction() as connection:
             receipt = receipt_row(connection, identity)
         if not receipt["master"]:
             fail("Image processing is not ready", 404)
+        if render not in ("raw", "final"):
+            fail("Render the raw scan or the final export page", 422)
+        if render == "final":
+            # The page exactly as the approved PDF will export it - same trim, same honoured
+            # recipe the export job reaches for - so the operator can compare what the scanner
+            # printed against what the archive will hold. Nothing here is written anywhere.
+            pixels = enhanced_array(trimmed_gray(receipt["master"]), receipt["binarization"] or "sauvola")
+            page = Image.fromarray(pixels, mode="L")
+            if top is None:
+                page.thumbnail((800, 1600))
+                buffer = io.BytesIO()
+                page.save(buffer, format="PNG")
+                return Response(buffer.getvalue(), media_type="image/png", headers={"X-Image-Height": str(pixels.shape[0])})
+            if top < 0:
+                fail("Row outside image", 422)
+            # The final page is trimmed, so a row near the raw scan's bottom may sit past it:
+            # clamp to the trimmed bottom instead of erroring, so the toggle never shows a broken image.
+            strip = page.crop((0, min(top, pixels.shape[0] - 1), page.width, min(top + 512, pixels.shape[0])))
+            buffer = io.BytesIO()
+            strip.save(buffer, format="PNG")
+            return Response(buffer.getvalue(), media_type="image/png", headers={"X-Image-Height": str(pixels.shape[0])})
         if top is None:
             return FileResponse(receipt["preview"], media_type="image/png")
         with Image.open(receipt["master"]) as master:
