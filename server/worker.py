@@ -21,6 +21,28 @@ from .storage import Settings, Store, digest, durable_write, encode, sync_direct
 
 Image.MAX_IMAGE_PIXELS = 160000000
 
+# The machine check for the legibility attestation. A receipt that OCR reads densely and confidently
+# is a readable image; a sparse or shaky read is not proof of anything, so the check only ever
+# attests in the positive and a human stays free to overrule it in either direction.
+LEGIBLE_MIN_CHARACTERS = 60
+LEGIBLE_MIN_CONFIDENCE = 70.0  # Tesseract's 0-100 word scale, double the weak_ocr_evidence cutoff
+
+
+def assess_legibility(evidence):
+    """Return measurement stats when the saved recognition evidence proves a legible page, else None.
+    Lines that multiple passes read at the same text collapse to their best confidence, so a second
+    pass cannot double-count characters, and confidence is weighted by characters per line."""
+    best = {}
+    for line in (evidence.get("ocr") or {}).get("lines") or []:
+        text = (line.get("text") or "").strip()
+        if len(text) > 1:
+            best[text] = max(best.get(text, 0.0), float(line.get("confidence") or 0.0))
+    characters = sum(len(text) for text in best)
+    if characters < LEGIBLE_MIN_CHARACTERS:
+        return None
+    weighted = sum(confidence * len(text) for text, confidence in best.items()) / characters
+    return {"characters": characters, "confidence": round(weighted, 2)} if weighted >= LEGIBLE_MIN_CONFIDENCE else None
+
 
 def image_bytes(image, format, **kwargs):
     buffer = io.BytesIO()
@@ -146,11 +168,18 @@ def analyze(store, run_id, ocr_backend=None, fallback=None, job=None):
         if active:
             selected = (evidence.get("extraction") or {}).get("selected")
             manual = receipt["field_source"] == "manual"
+            if receipt["readable_source"] == "operator":
+                # A human already judged legibility, in either direction; a machine may not reopen that.
+                readable, readable_source = receipt["readable"], "operator"
+            else:
+                legible = assess_legibility(evidence)
+                readable, readable_source = int(legible is not None), "ocr" if legible else None
             connection.execute("""UPDATE receipts SET state='ready',master=?,preview=?,evidence=?,error=NULL,
-              date=?,time=?,field_source=?,timestamp_review=? WHERE id=?""",
+              date=?,time=?,field_source=?,timestamp_review=?,readable=?,readable_source=? WHERE id=?""",
               (receipt["master"], receipt["preview"], encode(evidence), receipt["date"] if manual else selected["date"] if selected else None,
                receipt["time"] if manual else selected["time"] if selected else None,
-               "manual" if manual else "ocr" if selected else "unresolved", 0 if manual else 1, receipt["id"]))
+               "manual" if manual else "ocr" if selected else "unresolved", 0 if manual else 1,
+               readable, readable_source, receipt["id"]))
             store.changed(connection, receipt["group_id"])
             if selected and not manual:
                 store.regroup(connection, receipt["id"])

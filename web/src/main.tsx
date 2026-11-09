@@ -220,6 +220,7 @@ function ReceiptEditor({ receipt, group, refresh, selected, select, report, onDi
         </div>
         {receipt.complete_source === "transport" && <p class="proof">The scanner's end-of-page report carried this page through whole: the bottom flag is measured, not judged. You still own legibility.</p>}
         {receipt.complete_source === "operator" && <p class="proof">An earlier review already attested this page's physical bottom and legibility.</p>}
+        {receipt.readable_source === "ocr" && <p class="proof">Recognition read this page densely and confidently, so legibility was auto-checked rather than assumed. If the image disagrees, untick it — a machine never overrules your judgement.</p>}
       </fieldset>
     </form>
     {receipt.state === "ready" && <AnalysisControls receipt={receipt} group={group} refresh={refresh} report={report} />}

@@ -419,6 +419,60 @@ test("the ledger confirms a proposal-carrying page in one action and falls back 
   }, false, true);
 });
 
+test("a dense confident scan arrives legibility auto-checked, leaving one keystroke for the bottom", {
+  timeout: 180000, skip: spawnSync("tesseract", ["--version"]).status !== 0,
+}, async () => {
+  await environment(async ({ page, origin }) => {
+    const png = await page.evaluate(() => {
+      const canvas = document.createElement("canvas"); canvas.width = 640; canvas.height = 1200;
+      const context = canvas.getContext("2d"); context.fillStyle = "white"; context.fillRect(0, 0, 640, 1200);
+      context.fillStyle = "black"; context.font = "32px sans-serif";
+      const lines = ["MARTHA'S CORNER CAFE", "42 RIVER ROAD SPRINGFIELD", "SUBTOTAL 9.95 TAX 2.45",
+        "VISA DEBIT TOTAL 12.40", "2026-09-14 17:21:30", "AUTH 448312 THANK YOU"];
+      lines.forEach((line, index) => context.fillText(line, 30, 90 + index * 90));
+      return canvas.toDataURL("image/png").split(",")[1];
+    });
+    await page.locator('input[type="file"]').setInputFiles({ name: "dense.png", mimeType: "image/png", buffer: Buffer.from(png, "base64") });
+    let groups;
+    for (let attempt = 0; attempt < 250; attempt++) {
+      groups = (await (await page.request.get(`${origin}/api/state`)).json()).groups;
+      const receipts = groups.flatMap(group => group.receipts);
+      if (receipts.length === 1 && receipts[0].state === "ready" && !["queued", "running"].includes(receipts[0].analysis?.state ?? "ready")) break;
+      await sleep(200);
+    }
+    const [dense] = groups[0].receipts;
+    assert.equal(dense.date, "2026-09-14", "the fixture must OCR cleanly enough to carry a timestamp proposal");
+    assert.equal(dense.readable, 1);
+    assert.equal(dense.readable_source, "ocr", "a machine attestation must name itself as the source");
+    assert.equal(dense.complete, 0, "legibility being settled must not touch the physical bottom");
+    assert.equal(dense.complete_source, null);
+    await page.reload();
+    await page.waitForFunction(() => document.querySelectorAll(".cell").length === 1, null, { timeout: 30000 });
+    const cell = page.locator(".cell").first();
+    assert.match(await cell.getAttribute("title"), /attest bottom$/, "the ledger stops asking for the legibility attestation");
+    // The editor agrees: the tick arrives pre-set with a provenance note beside it.
+    await page.getByRole("button", { name: "Edit group 2026-09-14" }).click();
+    await page.waitForFunction(() => Boolean(document.querySelector("dialog.editor[open]")), null, { timeout: 15000 });
+    assert.equal(await page.getByLabel("Selected image is readable").isChecked(), true);
+    assert.equal(await page.getByLabel("Physical bottom is present").isChecked(), false);
+    assert.match(await page.locator("dialog.editor .proof").textContent(), /auto-checked/);
+    await closeEditor(page);
+    await page.waitForFunction(() => !document.querySelector("dialog.editor"), null, { timeout: 5000 });
+    // One Confirm then covers the bottom attestation and the date confirmation together.
+    await page.waitForFunction(() => Boolean(document.querySelector(".cell .act.confirm")), null, { timeout: 15000 });
+    assert.equal(await page.locator(".cell .act.attest").count(), 0, "no separate attestation once legibility is settled and Confirm covers the rest");
+    await page.locator(".cell .act.confirm").click();
+    await page.waitForFunction(() => document.querySelector('[role="status"]').textContent.includes("Confirmed 2026-09-14"), null, { timeout: 15000 });
+    await page.waitForFunction(() => Boolean(document.querySelector(".cell[data-severity=clear] .act.approve")), null, { timeout: 15000 });
+    await page.locator(".cell .act.approve").click();
+    await page.waitForFunction(() => !document.querySelector(".cell"), null, { timeout: 30000 });
+    await page.getByRole("tab", { name: /^Exports/ }).click();
+    await page.getByRole("link", { name: "Download approved PDF" }).waitFor({ timeout: 30000 });
+    const done = await (await page.request.get(`${origin}/api/state`)).json();
+    assert.match(done.groups[0].exports[0].path, /2026\/09-September\/20260914-1721\.pdf/);
+  }, false, true);
+});
+
 test("the keyboard cursor steps the ledger and X opens the focused group with its date field active", {
   timeout: 120000, skip: spawnSync("tesseract", ["--version"]).status !== 0,
 }, async () => {

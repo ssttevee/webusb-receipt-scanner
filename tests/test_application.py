@@ -2,14 +2,16 @@ import hashlib
 import json
 import time
 import uuid
+from dataclasses import asdict
 
 from fastapi.testclient import TestClient
 from PIL import Image
 import pytest
 
 from server.api import create_app
+from server.extraction import Line, extract
 from server.storage import Settings, Store, durable_write
-from server.worker import run_one
+from server.worker import LEGIBLE_MIN_CHARACTERS, LEGIBLE_MIN_CONFIDENCE, assess_legibility, run_one
 
 ORIGIN = "http://localhost:8000"
 HEADERS = {"Origin": ORIGIN, "Content-Type": "application/json"}
@@ -446,6 +448,85 @@ def test_transport_seeds_the_bottom_flag_but_legibility_stays_mine(runtime):
     assert receipt["readable"] == 0 and receipt["readable_source"] is None
     # A measured bottom does not unlock approval while legibility is unattested.
     assert client.post(f"/api/groups/{group['id']}/prepare", json={"version": group["version"]}).status_code == 409
+
+
+DENSE_READ = ["MARTHA'S CORNER CAFE 42 RIVER ROAD", "CARD **** 8821", "VISA DEBIT 12.40",
+              "SUBTOTAL 9.95 TAX 2.45", "TOTAL 12.40", "2026-09-14 17:21:30", "AUTH 448312 REF 92A1"]
+
+
+def fake_ocr(monkeypatch, lines):
+    import server.worker as worker
+    def recognize(*args, **kwargs):
+        return {"state": "done", "version": "fixture", "engine": "fixture", "backend": {"kind": "fixture"},
+                "lines": [asdict(line) for line in lines], "failures": [], "passes": [],
+                "text": "\n".join(line.text for line in lines), "seconds": 1, "initialization_seconds": 0,
+                "extraction": extract(lines, date_order=kwargs.get("date_order"), century=kwargs.get("century"))}
+    monkeypatch.setattr(worker, "recognize", recognize)
+
+
+def test_confident_dense_ocr_auto_attests_legibility_with_provenance(runtime, monkeypatch):
+    client, store = runtime
+    store.settings.ocr = True
+    lines = [Line(text, (0, 10, 500, 40), 88, source) for text in DENSE_READ for source in ("primary/discovery", "primary/tile-00")]
+    fake_ocr(monkeypatch, lines)
+    manifest, _ = capture(client, store)
+    group = state(client)["groups"][0]
+    receipt = group["receipts"][0]
+    assert receipt["readable"] == 1 and receipt["readable_source"] == "ocr"
+    assert receipt["complete"] == 1 and receipt["complete_source"] == "transport", "legibility and bottom stay separately sourced"
+    # Auto-legibility must not open the approval gate on its own: the timestamp still needs the operator.
+    assert client.post(f"/api/groups/{group['id']}/prepare", json={"version": group["version"]}).status_code == 409
+    confirmed = client.post("/api/receipts/confirm-proposed", json={"groups": {group["id"]: group["version"]},
+                                                                    "receipt_ids": [manifest["id"]]})
+    assert confirmed.status_code == 200 and confirmed.json()["confirmed"] == 1
+    confirmed_page = state(client)["groups"][0]["receipts"][0]
+    assert confirmed_page["readable_source"] == "operator", "confirming a proposal re-attributes legibility to the operator"
+    assert prepared(client, state(client)["groups"][0])
+
+
+def test_sparse_or_shaky_recognition_never_auto_attests_legibility(runtime, monkeypatch):
+    client, store = runtime
+    store.settings.ocr = True
+    fake_ocr(monkeypatch, [Line("TOTAL", (0, 10, 500, 40), 98, "primary/discovery"),
+                           Line("THANK YOU", (0, 60, 500, 90), 96, "primary/discovery")])
+    sparse, _ = capture(client, store, identity=str(uuid.uuid4()))
+    fake_ocr(monkeypatch, [Line(text, (0, 10, 500, 40), 40, "primary/discovery") for text in DENSE_READ])
+    shaky, _ = capture(client, store, identity=str(uuid.uuid4()))
+    for identity in (sparse["id"], shaky["id"]):
+        receipt = next(r for g in state(client)["groups"] for r in g["receipts"] if r["id"] == identity)
+        assert not receipt["readable"] and receipt["readable_source"] is None, identity
+
+
+def test_operator_legibility_ruling_survives_reanalysis_even_against_a_perfect_read(runtime, monkeypatch):
+    client, store = runtime
+    store.settings.ocr = True
+    lines = [Line(text, (0, 10, 500, 40), 92, "primary/discovery") for text in DENSE_READ]
+    fake_ocr(monkeypatch, lines)
+    manifest, _ = capture(client, store)
+    identity = manifest["id"]
+    group = state(client)["groups"][0]
+    assert state(client)["groups"][0]["receipts"][0]["readable_source"] == "ocr"
+    # The operator overrules the machine: the page is unreadable to human eyes despite clean OCR.
+    assert client.post(f"/api/receipts/{identity}", json={"version": group["version"], "date": "2026-09-14",
+        "time": "17:21:30", "vendor": None, "complete": True, "readable": False}).status_code == 200
+    group = state(client)["groups"][0]
+    assert client.post(f"/api/receipts/{identity}/analyze", json={"version": group["version"],
+        "date_order": "MDY", "century": 2000}).status_code == 202
+    assert run_one(store)
+    receipt = state(client)["groups"][0]["receipts"][0]
+    assert not receipt["readable"] and receipt["readable_source"] == "operator", "a reanalysis may not re-attest over a human ruling"
+    assert client.post(f"/api/groups/{group['id']}/prepare", json={"version": group["version"]}).status_code == 409
+
+
+def test_legibility_assessment_dedupes_passes_and_weights_by_characters():
+    assert assess_legibility({"ocr": None}) is None
+    dense = {"ocr": {"lines": [{"text": text, "confidence": 88, "source": "primary/discovery"} for text in DENSE_READ]}}
+    stats = assess_legibility(dense)
+    assert stats and stats["characters"] >= LEGIBLE_MIN_CHARACTERS and stats["confidence"] >= LEGIBLE_MIN_CONFIDENCE
+    doubled = {"ocr": {"lines": dense["ocr"]["lines"] + [{"text": text, "confidence": 55, "source": "fallback/tile"} for text in DENSE_READ]}}
+    assert assess_legibility(doubled) == stats, "a weaker duplicate pass must not drag the verdict down or double-count characters"
+    assert assess_legibility({"ocr": {"lines": [{"text": text, "confidence": 40, "source": "p"} for text in DENSE_READ]}}) is None
+    assert assess_legibility({"ocr": {"lines": [{"text": "OK", "confidence": 99, "source": "p"}] * 40}}) is None, "repeats of one short line dedupe to two characters, not eighty"
 
 
 def test_image_imports_claim_transport_but_prove_nothing(runtime):
