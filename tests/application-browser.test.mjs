@@ -12,7 +12,8 @@ import { installEpsonFixture } from "./epson-usb-fixture.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
-// Ledger cells stay one fixed line tall; page fields, proposals and approvals only exist inside the cell's modal editor.
+// Review holds only the groups that need judgment, so ledger rows stay roomy: one line per group,
+// full-word issue labels, and action buttons that spell their verb. Fields and approvals live in the row's modal editor.
 const openEditor = (page, timeout = 30000) => page.getByRole("button", { name: /^Edit group/ }).first().click({ timeout });
 const closeEditor = page => page.getByRole("button", { name: "Close", exact: true }).click();
 
@@ -587,7 +588,7 @@ test("the keyboard cursor steps the ledger and X opens the focused group with it
   }, false, true);
 });
 
-test("ledger cells keep one fixed line and no fix token truncates at laptop or desktop widths", {
+test("review rows keep one readable line and no full-word fix label truncates at laptop or desktop widths", {
   timeout: 120000, skip: spawnSync("tesseract", ["--version"]).status !== 0,
 }, async () => {
   await environment(async ({ page }) => {
@@ -614,7 +615,7 @@ test("ledger cells keep one fixed line and no fix token truncates at laptop or d
           tracks: getComputedStyle(document.querySelector(".ledger")).gridTemplateColumns.split(" ").length };
       });
       assert.deepEqual([fit.cells, fit.heights, fit.clipped], [4, 1, []], `at ${width}px`);
-      assert.equal(fit.tracks, width === 1280 ? 2 : 3, `at ${width}px`);
+      assert.equal(fit.tracks, 1, `at ${width}px`);
     }
   }, false, true);
 });

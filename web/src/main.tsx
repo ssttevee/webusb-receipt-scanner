@@ -31,25 +31,26 @@ type Job = { id: string; kind: string; target: string; state: string; attempts: 
 type State = { groups: Group[]; jobs: Job[]; drive: { configured: boolean; connected: boolean } };
 type Reservation = { id: string; path: string; version: number; note?: string | null };
 
-type Reason = { code: string; label: string; short: string; hard: boolean };
+type Reason = { code: string; label: string; hard: boolean };
 
 // Every label names the operator's next move, not the symptom, and FIX_RANK orders them by how
 // much judgment the fix needs: an unresolved date outranks a checkbox, so the primary fix shown
 // in a ledger cell is always the most expensive thing standing between the group and approval.
-// `short` is the same instruction at ledger width; the row's action button supplies the verb and
-// its tooltip plus the status line give the full sentence.
+// Since settled scans moved to the Approve tab, Review rows are few enough to spell everything
+// out: chips carry the full instruction and the action button carries the verb itself.
 const FIX_RANK: Record<string, number> = { error: 0, processing: 1, timestamp: 2, "analysis-failed": 3, incomplete: 4, unreadable: 5, analyzing: 6, proposal: 7 };
+const ACT_VERB: Record<string, string> = { confirm: "Confirm", attest: "Attest", approve: "Approve", retry: "Retry" };
 
 function receiptIssues(receipt: Receipt): Reason[] {
   const issues: Reason[] = [];
-  if (receipt.error) issues.push({ code: "error", label: "scan error", short: "error", hard: true });
-  if (receipt.state !== "ready") issues.push({ code: "processing", label: "scan pending", short: "scanning", hard: true });
-  if (!receipt.date || !receipt.time) issues.push({ code: "timestamp", label: receipt.date ? "set time" : "set date", short: receipt.date ? "time" : "date", hard: true });
-  if (receipt.analysis?.state === "failed") issues.push({ code: "analysis-failed", label: "retry analysis", short: "retry", hard: true });
-  if (!receipt.complete) issues.push({ code: "incomplete", label: "attest bottom", short: "bottom", hard: true });
-  if (!receipt.readable) issues.push({ code: "unreadable", label: "attest legible", short: "legible", hard: true });
-  if (["queued", "running"].includes(receipt.analysis?.state ?? "")) issues.push({ code: "analyzing", label: "OCR running", short: "OCR", hard: false });
-  if (receipt.timestamp_review && !issues.some(issue => issue.hard)) issues.push({ code: "proposal", label: "confirm date", short: "confirm", hard: false });
+  if (receipt.error) issues.push({ code: "error", label: "scan error", hard: true });
+  if (receipt.state !== "ready") issues.push({ code: "processing", label: "scan pending", hard: true });
+  if (!receipt.date || !receipt.time) issues.push({ code: "timestamp", label: receipt.date ? "set time" : "set date", hard: true });
+  if (receipt.analysis?.state === "failed") issues.push({ code: "analysis-failed", label: "retry analysis", hard: true });
+  if (!receipt.complete) issues.push({ code: "incomplete", label: "attest bottom", hard: true });
+  if (!receipt.readable) issues.push({ code: "unreadable", label: "attest legible", hard: true });
+  if (["queued", "running"].includes(receipt.analysis?.state ?? "")) issues.push({ code: "analyzing", label: "OCR running", hard: false });
+  if (receipt.timestamp_review && !issues.some(issue => issue.hard)) issues.push({ code: "proposal", label: "confirm date", hard: false });
   return issues;
 }
 
@@ -63,12 +64,12 @@ function groupSeverity(group: Group): "blocked" | "pending" | "clear" {
 // Glyph plus tint plus border: severity must survive greyscale and colour-blind viewing.
 const SEVERITY_GLYPH = { blocked: "▲", pending: "●", clear: "✓" };
 
-function groupIssues(group: Group): { code: string; label: string; short: string; count: number; hard: boolean }[] {
-  const counts = new Map<string, { label: string; short: string; count: number; hard: boolean }>();
+function groupIssues(group: Group): { code: string; label: string; count: number; hard: boolean }[] {
+  const counts = new Map<string, { label: string; count: number; hard: boolean }>();
   for (const receipt of group.receipts) for (const issue of receiptIssues(receipt)) {
     const current = counts.get(issue.code);
     counts.set(issue.code, current ? { ...current, count: current.count + 1, hard: current.hard || issue.hard }
-      : { label: issue.label, short: issue.short, count: 1, hard: issue.hard });
+      : { label: issue.label, count: 1, hard: issue.hard });
   }
   return [...counts].map(([code, meta]) => ({ code, ...meta }))
     .sort((a, b) => (FIX_RANK[a.code] ?? 9) - (FIX_RANK[b.code] ?? 9) || b.count - a.count);
@@ -371,7 +372,7 @@ function LedgerCell({ group, index, fix, focused, busy, edit, act }: {
   group: Group; index: number; fix: Fix; focused: boolean; busy: boolean; edit: () => void; act: () => Promise<void>;
 }) {
   const title = groupTitle(group);
-  const chips = (group.state === "approval_failed" ? [{ code: "approval-failed", label: "approval failed", short: "failed", count: 1, hard: true }] : [])
+  const chips = (group.state === "approval_failed" ? [{ code: "approval-failed", label: "approval failed", count: 1, hard: true }] : [])
     .concat(groupIssues(group));
   const working = chips.length > 0 && chips.every(chip => chip.code === "analyzing");
   return <section class="cell" data-group-id={group.id} data-ledger-index={index} data-severity={groupSeverity(group)}
@@ -379,12 +380,12 @@ function LedgerCell({ group, index, fix, focused, busy, edit, act }: {
       chips.map(chip => `${chip.label}${chip.count > 1 ? ` ×${chip.count}` : ""}`).join(" · ") || "no open issues"}`}>
     <span class={`glyph${working ? " working" : ""}`} aria-hidden="true">{SEVERITY_GLYPH[groupSeverity(group)]}</span>
     <button class="ident" aria-haspopup="dialog" aria-label={`Edit group ${title}`} onClick={edit}>
-      {title} <em>{group.receipts.length}p</em></button>
-    <span class="fixes">{chips.slice(0, 2).map(chip => <span class={`pill ${chip.hard ? "bad" : "warn"}`} key={chip.code}>
-      {chip.short}{chip.count > 1 ? ` ×${chip.count}` : ""}</span>)}
-      {chips.length > 2 && <span class="pill more">+{chips.length - 2}</span>}</span>
+      {title} <em>{group.receipts.length} page{group.receipts.length === 1 ? "" : "s"}</em></button>
+    <span class="fixes">{chips.slice(0, 3).map(chip => <span class={`pill ${chip.hard ? "bad" : "warn"}`} key={chip.code}>
+      {chip.label}{chip.count > 1 ? ` ×${chip.count}` : ""}</span>)}
+      {chips.length > 3 && <span class="pill more">+{chips.length - 3} more</span>}</span>
     {fix && <button class={`act ${fix.kind}`} disabled={busy} onClick={act} aria-label={fix.hint} title={fix.hint}>
-      ⏎{fix.count > 1 ? fix.count : ""}</button>}
+      {ACT_VERB[fix.kind]}{fix.count > 1 ? ` ×${fix.count}` : ""}</button>}
   </section>;
 }
 
