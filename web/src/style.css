@@ -83,20 +83,23 @@ dialog.editor>.approval,dialog.editor>.muted{margin:0 18px 16px}
 .ledger-head .legend{margin-left:auto;font-size:.72rem;letter-spacing:.02em;color:#5d737d;text-transform:none}
 /* Review is now the small queue of groups needing judgment, not the wall of every staged scan, so the
    ledger is a single column of roomy rows: full-word labels always fit and nothing ellipsizes.
-   Every row uses the same five columns, so evidence, the ruling form and the verbs hold the same
-   x-positions all the way down the page — a long title or a third button in one row can never shove
-   its neighbours sideways, and each row sizes the form identically. */
+   Each row is two bands: a header line with the group's identity and its verbs, then the evidence
+   and the ruling form below, where the crops get the row's full height. Every row repeats the same
+   three columns so the bands align down the page — a long title or a third button in one row can
+   never shove its neighbours sideways, and each row sizes the form identically. */
 .ledger{display:grid;gap:10px;align-content:start;max-width:1180px}
-.cell{display:grid;grid-template-columns:22px 164px minmax(236px,1fr) minmax(306px,1fr) 254px;align-items:center;gap:10px;min-height:92px;padding:10px 14px;background:white;border:1px solid #d4dfe4;border-left:4px solid #9fb2ba;border-radius:8px;font-size:.9rem}
-/* Below a 1440 screen the five parts cannot share one line and keep the crops readable, so the row
-   folds: evidence and verbs on the top line, the ruling across the second, floors released. */
+.cell{display:grid;grid-template-columns:22px minmax(236px,1fr) minmax(316px,344px);grid-template-rows:auto auto;align-items:center;gap:10px 14px;min-height:92px;padding:10px 14px;background:white;border:1px solid #d4dfe4;border-left:4px solid #9fb2ba;border-radius:8px;font-size:.9rem}
+.cell>.glyph{grid-column:1/2;grid-row:1/2}
+.cell>.ident{grid-column:2/3;grid-row:1/2;justify-self:start;max-width:100%}
+.cell>.stamps{grid-column:2/3;grid-row:2/3;align-self:start}
+.cell>.ruling{grid-column:3/4;grid-row:2/3;align-self:start}
+.cell>.row-actions{grid-column:3/4;grid-row:1/2;justify-self:end}
+/* Below a 1440 screen the evidence and the form cannot share a line and keep the crops readable, so
+   they fold onto their own lines under the header; floors release but the shared columns hold. */
 @media(max-width:1439px){
-  .cell{grid-template-columns:22px 164px minmax(0,1fr) minmax(0,1fr) 254px;grid-template-rows:auto auto}
-  .cell>.glyph{grid-column:1/2;grid-row:1/3}
-  .cell>.ident{grid-column:2/3;grid-row:1/2}
-  .cell>.stamps{grid-column:3/5;grid-row:1/2}
-  .cell>.ruling{grid-column:2/5;grid-row:2/3}
-  .cell>.row-actions{grid-column:5/6;grid-row:1/3;justify-content:flex-end}
+  .cell{grid-template-columns:22px minmax(0,1fr) auto;grid-template-rows:auto auto auto}
+  .cell>.stamps{grid-column:2/4;grid-row:2/3}
+  .cell>.ruling{grid-column:2/4;grid-row:3/4}
 }
 /* The queue column gives way before the ledger row does: a row that loses its crops or its fields is
    useless, while a narrower scan list is still a scan list. */
@@ -125,11 +128,13 @@ dialog.editor>.approval,dialog.editor>.muted{margin:0 18px 16px}
 /* Evidence, ruling, exit: the candidates OCR printed, the fields that fix them, the verbs that close.
    Every slot is the same height whatever it holds — an accepted strip, two rival crops, a page corner
    or a blank — so one row's evidence can't make it taller than its neighbours. */
-.cell .stamps{display:flex;align-items:flex-start;gap:8px;min-width:0}
-.cell .stamp-slot{display:flex;flex-direction:column;gap:3px;min-width:0;flex:1 1 0;height:64px}
-.cell .stamp-slot.blank{flex:none;width:110px;border:1px dashed #b9c6cd;border-radius:6px;background:#f2f5f6}
+/* Candidates stack vertically so each crop gets the band's full width: a stamp region printed wide
+   is read as printed, not squeezed into a column that shares the line with its rival. */
+.cell .stamps{display:grid;grid-template-columns:minmax(0,1fr);gap:8px;min-width:0;align-content:start}
+.cell .stamp-slot{display:flex;flex-direction:column;gap:3px;min-width:0}
+.cell .stamp-slot.blank{width:min(100%,300px);height:80px;border:1px dashed #b9c6cd;border-radius:6px;background:#f2f5f6}
 .cell .stamp-slot small{flex:none;max-width:100%;font-size:.66rem;line-height:1.2;color:#5d737d;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
-.cell .stamp-strip{width:100%;flex:1 1 0;min-height:0;object-fit:contain;object-position:left center;background:#f2f5f6;border:1px solid #c8d4da;border-radius:6px}
+.cell .stamp-strip{width:100%;height:80px;object-fit:contain;object-position:left center;background:#f2f5f6;border:1px solid #c8d4da;border-radius:6px}
 .cell .stamp-strip.page{width:44px;max-width:44px;object-fit:cover;object-position:bottom center}
 .cell .ruling{display:flex;flex-direction:column;gap:7px;min-width:0}
 .cell .fields{display:flex;align-items:center;gap:10px;flex-wrap:wrap}

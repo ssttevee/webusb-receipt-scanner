@@ -625,6 +625,19 @@ test("review rows show their timestamp evidence, prefilled fields and no truncat
           // Rows share their columns: evidence, the form and the exits hold the same x all the way down.
           columns: [...new Set(cells.map(cell => [column(cell, ".stamp-slot"), column(cell, ".stamp-date"), column(cell, ".act.details")].join()))],
           tracks: [...new Set(cells.map(cell => getComputedStyle(cell).gridTemplateColumns.split(" ").length))],
+          // The row is two bands: identity and verbs on the header line, evidence and form below it;
+          // candidate slots stack so each crop can span the row, and they arrive wide enough to read.
+          bands: cells.every(cell => {
+            const top = node => node.getBoundingClientRect().top;
+            return top(cell.querySelector(".row-actions")) < top(cell.querySelector(".stamps"))
+              && top(cell.querySelector(".row-actions")) < top(cell.querySelector(".ruling"));
+          }),
+          stacked: cells.every(cell => {
+            const slots = [...cell.querySelectorAll(".stamp-slot")];
+            return slots.length < 2 || slots[1].getBoundingClientRect().top >= slots[0].getBoundingClientRect().bottom;
+          }),
+          stripWidth: Math.min(...cells.flatMap(cell => [...cell.querySelectorAll(".stamp-strip")]
+            .filter(img => !img.classList.contains("page")).map(img => Math.round(img.getBoundingClientRect().width)))),
           clipped: cells.flatMap(cell => [...cell.querySelectorAll(".fixes .pill, .stamp-slot small, .ident")].filter(item => item.scrollWidth > item.clientWidth + 1).map(item => item.textContent)),
           // Every row carries the printed evidence, the ruling it starts from, and both exits.
           evidence: cells.filter(cell => cell.querySelectorAll(".stamp-strip").length > 0).length,
@@ -632,8 +645,10 @@ test("review rows show their timestamp evidence, prefilled fields and no truncat
             && cell.querySelector(".stamp-time")?.value.startsWith("17:")).length,
           verbs: cells.filter(cell => cell.querySelector(".act.save") && cell.querySelector(".act.details")).length };
       });
-      assert.deepEqual([fit.cells, fit.heights, fit.columns.length, fit.tracks, fit.clipped], [4, 1, 1, [5], []], `at ${width}px`);
+      assert.deepEqual([fit.cells, fit.heights, fit.columns.length, fit.tracks, fit.clipped], [4, 1, 1, [3], []], `at ${width}px`);
       assert.deepEqual([fit.evidence, fit.prefilled, fit.verbs], [4, 4, 4], `at ${width}px`);
+      assert.deepEqual([fit.bands, fit.stacked, fit.stripWidth > 420], [true, true, true],
+        `the header line must sit above the crops and the form, candidates must stack, and the crops must span the row at ${width}px`);
     }
   }, false, true);
 });

@@ -425,8 +425,9 @@ function StampEvidence({ receipt, reading, limit = 2 }: { receipt: Receipt; read
     `${candidate.dates[0] ?? "no date"} ${candidate.time ?? "no time"}`, candidate.text))}</>;
 }
 
-// One review row: tall enough to hold its evidence and its form, and it carries the verb that
-// needs no dialog. Reading order is evidence, ruling, exit.
+// One review row in two bands. The header line carries the group and the verbs that need no dialog;
+// below it, the printed evidence and the prefilled ruling form, where the crops can use the full
+// width of the row because nothing competes with them on their line.
 function LedgerCell({ group, index, fix, focused, busy, edit, act, draft, setDraft, save, readings }: {
   group: Group; index: number; fix: Fix; focused: boolean; busy: boolean; edit: () => void; act: () => Promise<void>;
   draft: Draft; setDraft: (value: string, field: "date" | "time") => void; save: () => Promise<void>;
@@ -437,8 +438,9 @@ function LedgerCell({ group, index, fix, focused, busy, edit, act, draft, setDra
     .concat(groupIssues(group));
   const working = chips.length > 0 && chips.every(chip => chip.code === "analyzing");
   const reviewable = group.receipts.some(receipt => !receipt.date || !receipt.time || receipt.timestamp_review);
-  // A row can hold two slots of evidence: with several pages each gets its own stamp, with one page
-  // the rival candidates sit side by side so the eye can pick between them.
+  // A row can hold two slots of evidence, stacked one above the other so each crop spans the row:
+  // with several pages each gets its own stamp, with one page the rival candidates line up for the
+  // eye to pick between.
   const evidence = group.receipts.slice(0, 2);
   const evidenceLimit = evidence.length > 1 ? 1 : 2;
   return <section class="cell" data-group-id={group.id} data-ledger-index={index} data-severity={groupSeverity(group)}
