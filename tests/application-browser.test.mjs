@@ -342,56 +342,80 @@ test("scan century defaults to this century and persists for later imports", {
   }, false, true);
 });
 
-test("the ledger ladder attests, confirms and approves a group from its cell without opening the editor", {
-  timeout: 120000, skip: spawnSync("tesseract", ["--version"]).status !== 0,
+test("the ledger confirms a proposal-carrying page in one action and falls back to attest after a manual review", {
+  timeout: 180000, skip: spawnSync("tesseract", ["--version"]).status !== 0,
 }, async () => {
   await environment(async ({ page, origin }) => {
-    const png = await page.evaluate(() => {
-      const canvas = document.createElement("canvas"); canvas.width = 640; canvas.height = 1200;
-      const context = canvas.getContext("2d"); context.fillStyle = "white"; context.fillRect(0, 0, 640, 1200);
-      context.fillStyle = "black"; context.font = "32px sans-serif";
-      context.fillText("Transaction", 30, 80); context.fillText("2026-09-14 17:21:30", 30, 150); context.fillText("BOTTOM", 30, 1150);
-      return canvas.toDataURL("image/png").split(",")[1];
-    });
-    await page.locator('input[type="file"]').setInputFiles({ name: "ladder.png", mimeType: "image/png", buffer: Buffer.from(png, "base64") });
-    for (let attempt = 0; attempt < 150; attempt++) {
-      const intake = await (await page.request.get(`${origin}/api/state`)).json();
-      const [receipt] = intake.groups[0]?.receipts ?? [];
-      if (receipt?.state === "ready" && receipt.date === "2026-09-14" && !["queued", "running"].includes(receipt.analysis?.state ?? "ready")) break;
+    async function importReceipt(name, lines) {
+      const png = await page.evaluate(text => {
+        const canvas = document.createElement("canvas"); canvas.width = 640; canvas.height = 1200;
+        const context = canvas.getContext("2d"); context.fillStyle = "white"; context.fillRect(0, 0, 640, 1200);
+        context.fillStyle = "black"; context.font = "32px sans-serif";
+        text.forEach((line, index) => context.fillText(line, 30, 80 + index * 70));
+        return canvas.toDataURL("image/png").split(",")[1];
+      }, lines);
+      await page.locator('input[type="file"]').setInputFiles({ name, mimeType: "image/png", buffer: Buffer.from(png, "base64") });
+    }
+    await importReceipt("proposal.png", ["Transaction", "2026-09-14 17:21:30", "BOTTOM"]);
+    await importReceipt("manual.png", ["Self service", "THANK YOU"]);
+    let groups;
+    for (let attempt = 0; attempt < 250; attempt++) {
+      groups = (await (await page.request.get(`${origin}/api/state`)).json()).groups;
+      const receipts = groups.flatMap(group => group.receipts);
+      if (groups.length === 2 && receipts.length === 2 && receipts.every(receipt => receipt.state === "ready")
+        && receipts.every(receipt => !["queued", "running"].includes(receipt.analysis?.state ?? "ready"))) break;
       await sleep(200);
     }
+    const proposal = groups.find(group => group.receipts[0]?.date === "2026-09-14");
+    const blank = groups.find(group => proposal && group.id !== proposal.id);
+    assert.ok(proposal && blank && groups.length === 2, JSON.stringify(groups.map(group => group.receipts[0]?.date)));
     await page.reload();
-    await page.waitForFunction(() => Boolean(document.querySelector(".cell .act.attest")), null, { timeout: 30000 });
-    // The cell shows short fix tokens, but its tooltip carries the full verb-first instruction —
-    // and only the instructions that are actionable now (confirm date is suppressed until the
-    // hard attestations are done, so a cell never advertises a fix that would be refused).
-    assert.equal(await page.locator(".cell").getAttribute("data-severity"), "blocked");
-    assert.match(await page.locator(".cell").getAttribute("title"), /attest bottom · attest legible$/);
-    await page.locator(".cell .act.attest").click();
+    await page.waitForFunction(() => document.querySelectorAll(".cell").length === 2, null, { timeout: 30000 });
+    // An image import proves nothing about transport, so bottom and legibility start unattested -
+    // but one Confirm call sets both flags and the review in a single server-side UPDATE, so the
+    // ledger offers Confirm rather than a two-step attest, and the undated page gets no half-fix.
+    const proposalCell = page.locator(`.cell[data-group-id="${proposal.id}"]`);
+    assert.equal(await proposalCell.getAttribute("data-severity"), "blocked");
+    assert.match(await proposalCell.getAttribute("title"), /attest bottom · attest legible$/);
+    assert.match(await proposalCell.locator(".act.confirm").getAttribute("aria-label"), /also attests bottom and legibility/);
+    assert.equal(await page.locator(".cell .act").count(), 1, "the undated group must not offer a fix the server would refuse");
+    // Type a review by hand without the checkboxes: the proposal is gone, so Confirm can no
+    // longer reach this page and the ledger must fall back to attest.
+    await page.getByRole("button", { name: `Edit group #${blank.id.slice(0, 8)}` }).click();
+    await page.waitForFunction(() => Boolean(document.querySelector("dialog.editor[open]")), null, { timeout: 15000 });
+    await page.getByLabel("Transaction date", { exact: true }).fill("2026-09-15");
+    await page.getByLabel("Transaction time", { exact: true }).fill("09:04:11");
+    assert.equal(await page.getByLabel("Physical bottom is present").isChecked(), false);
+    assert.equal(await page.getByLabel("Selected image is readable").isChecked(), false);
+    await page.getByRole("button", { name: "Save review", exact: true }).click();
+    await page.waitForFunction(() => document.querySelector('[role="status"]').textContent.includes("Review saved"), null, { timeout: 15000 });
+    await closeEditor(page);
+    await page.waitForFunction(() => !document.querySelector("dialog.editor"), null, { timeout: 5000 });
+    await page.waitForFunction(id => Boolean(document.querySelector(`.cell[data-group-id="${id}"] .act.attest`)), blank.id, { timeout: 15000 });
+    await page.locator(`.cell[data-group-id="${blank.id}"] .act.attest`).click();
     await page.waitForFunction(() => document.querySelector('[role="status"]').textContent.includes("Attested bottom"), null, { timeout: 15000 });
-    const attested = await (await page.request.get(`${origin}/api/state`)).json();
-    const [attestedPage] = attested.groups[0].receipts;
-    assert.equal(attestedPage.complete, 1); assert.equal(attestedPage.readable, 1);
-    assert.equal(attestedPage.field_source, "ocr", "attestation must never rewrite the proposal state");
-    assert.equal(attestedPage.timestamp_review, 1, "attestation must leave the review requirement intact");
-    await page.waitForFunction(() => Boolean(document.querySelector(".cell[data-severity=pending] .act.confirm")), null, { timeout: 15000 });
-    assert.match(await page.locator(".cell").getAttribute("title"), /confirm date$/, "the cell now names its one remaining fix");
-    // One job, one name: the row button and the toolbar button are the same verb at two scopes.
+    const blankCell = page.locator(`.cell[data-group-id="${blank.id}"]`);
+    assert.equal(await blankCell.getAttribute("data-severity"), "clear");
+    assert.equal(await blankCell.locator(".act").count(), 0, "a manually reviewed page keeps its approval decision in the dialog");
+    // Back to the one-call path. One job, one name: the row button and the toolbar button are
+    // the same verb at two scopes.
     assert.match(await page.getByRole("button", { name: /^Confirm ready pages/ }).textContent(), /\(1\)/);
-    await page.locator(".cell .act.confirm").click();
+    await page.locator(`.cell[data-group-id="${proposal.id}"] .act.confirm`).click();
     await page.waitForFunction(() => document.querySelector('[role="status"]').textContent.includes("Confirmed 2026-09-14"), null, { timeout: 15000 });
     const confirmed = await (await page.request.get(`${origin}/api/state`)).json();
-    assert.equal(confirmed.groups[0].receipts[0].field_source, "confirmed");
-    assert.equal(confirmed.groups[0].receipts[0].timestamp_review, 0);
-    assert.equal(confirmed.groups[0].receipts[0].complete, 1);
-    assert.equal(confirmed.groups[0].receipts[0].readable, 1);
-    await page.waitForFunction(() => Boolean(document.querySelector(".cell[data-severity=clear] .act.approve")), null, { timeout: 15000 });
-    await page.locator(".cell .act.approve").click();
-    await page.waitForFunction(() => !document.querySelector(".cell"), null, { timeout: 30000 });
+    const [confirmedPage] = confirmed.groups.find(group => group.id === proposal.id).receipts;
+    assert.equal(confirmedPage.field_source, "confirmed");
+    assert.equal(confirmedPage.timestamp_review, 0);
+    assert.equal(confirmedPage.complete, 1);
+    assert.equal(confirmedPage.readable, 1);
+    assert.equal(confirmedPage.complete_source, "operator", "the approval snapshot must be able to say who attested the bottom");
+    await page.waitForFunction(id => document.querySelector(`.cell[data-group-id="${id}"][data-severity=clear] .act.approve`), proposal.id, { timeout: 15000 });
+    await page.locator(`.cell[data-group-id="${proposal.id}"] .act.approve`).click();
+    await page.waitForFunction(id => !document.querySelector(`.cell[data-group-id="${id}"]`), proposal.id, { timeout: 30000 });
     await page.getByRole("tab", { name: /^Exports/ }).click();
     await page.getByRole("link", { name: "Download approved PDF" }).waitFor({ timeout: 30000 });
     const done = await (await page.request.get(`${origin}/api/state`)).json();
-    assert.match(done.groups[0].exports[0].path, /2026\/09-September\/20260914-1721\.pdf/);
+    assert.match(done.groups.find(group => group.id === proposal.id).exports[0].path, /2026\/09-September\/20260914-1721\.pdf/);
   }, false, true);
 });
 

@@ -52,6 +52,7 @@ input[type=file]::file-selector-button{font:inherit;font-weight:600;padding:6px 
 .field-grid{display:grid;grid-template-columns:1fr 1fr;gap:4px 10px}
 .field-grid>label{margin:4px 0}
 .field-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:6px}
+.proof{margin:6px 0 0;font-size:.78rem;color:#1f5f8b}
 fieldset{border:0;padding:0;margin:0}
 .field-grid>label>input{width:100%}
 [hidden]{display:none}

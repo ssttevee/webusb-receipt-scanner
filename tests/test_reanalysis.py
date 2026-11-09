@@ -303,6 +303,7 @@ def test_schema_two_migration_preserves_confirmation(tmp_path):
     store = Store(settings)
     with store.transaction() as connection:
         row = dict(connection.execute("SELECT * FROM receipts").fetchone())
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
         assert row["date"] == "2024-06-01" and row["time"] == "17:06:29" and row["timestamp_review"] == 0
         assert row["active_analysis"] is None and row["analysis_version"] == 0
+        assert row["complete_source"] is None and row["readable_source"] is None

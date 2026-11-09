@@ -411,26 +411,55 @@ def test_attest_moves_only_the_two_operator_flags_and_never_regroups(runtime):
     capture(client, store)
     group = state(client)["groups"][0]
     page = group["receipts"][0]
-    assert not page["complete"] and not page["readable"]
+    assert page["complete"] and page["complete_source"] == "transport" and not page["readable"]
     assert client.post(f"/api/receipts/{page['id']}/attest",
         json={"version": group["version"] + 1, "complete": True, "readable": True}).status_code == 409
+    # The operator may overrule the transport report: that is still only a flag change.
     assert client.post(f"/api/receipts/{page['id']}/attest",
-        json={"version": group["version"], "complete": True, "readable": True}).status_code == 200
+        json={"version": group["version"], "complete": False, "readable": False}).status_code == 200
+    denied = state(client)["groups"][0]
+    assert not denied["receipts"][0]["complete"] and denied["receipts"][0]["complete_source"] == "operator"
+    assert client.post(f"/api/receipts/{page['id']}/attest",
+        json={"version": denied["version"], "complete": True, "readable": True}).status_code == 200
     after = state(client)["groups"]
     assert len(after) == 1 and after[0]["id"] == group["id"]
     attested = after[0]["receipts"][0]
-    assert attested["complete"] and attested["readable"] and after[0]["version"] == group["version"] + 1
+    assert attested["complete"] and attested["readable"] and after[0]["version"] == denied["version"] + 1
+    assert attested["complete_source"] == attested["readable_source"] == "operator"
     for field in ("date", "time", "vendor", "field_source", "timestamp_review", "state", "error", "group_id"):
         assert attested[field] == page[field], field
-    assert client.post(f"/api/receipts/{page['id']}/attest",
-        json={"version": after[0]["version"], "complete": False, "readable": True}).status_code == 200
-    cleared = state(client)["groups"][0]["receipts"][0]
-    assert not cleared["complete"] and cleared["readable"]
     waiting = capture(client, store, process=False)
     waiting_group = next(g for g in state(client)["groups"] if any(r["id"] == waiting[0]["id"] for r in g["receipts"]))
     assert next(r for r in waiting_group["receipts"] if r["id"] == waiting[0]["id"])["state"] != "ready"
     assert client.post(f"/api/receipts/{waiting[0]['id']}/attest",
         json={"version": waiting_group["version"], "complete": True, "readable": True}).status_code == 409
+
+
+def test_transport_seeds_the_bottom_flag_but_legibility_stays_mine(runtime):
+    client, store = runtime
+    capture(client, store)
+    group = state(client)["groups"][0]
+    receipt = group["receipts"][0]
+    assert receipt["complete"] == 1 and receipt["complete_source"] == "transport"
+    assert receipt["readable"] == 0 and receipt["readable_source"] is None
+    # A measured bottom does not unlock approval while legibility is unattested.
+    assert client.post(f"/api/groups/{group['id']}/prepare", json={"version": group["version"]}).status_code == 409
+
+
+def test_image_imports_claim_transport_but_prove_nothing(runtime):
+    from io import BytesIO
+    client, store = runtime
+    buffer = BytesIO()
+    Image.new("L", (20, 160), 220).save(buffer, "PNG")
+    data = buffer.getvalue()
+    manifest = {"id": str(uuid.uuid4()), "sha256": hashlib.sha256(data).hexdigest(), "byte_length": len(data),
+        "kind": "image", "width": 20, "height": 160, "dpi_x": 200, "dpi_y": 200, "transport_complete": True}
+    assert client.post("/api/captures", json=manifest).status_code == 200
+    assert client.put(f"/api/captures/{manifest['id']}/chunks/0", content=data,
+                      headers={**HEADERS, "Content-Type": "application/octet-stream"}).status_code == 200
+    assert client.post(f"/api/captures/{manifest['id']}/finalize").json()["durable"] is True
+    receipt = next(r for g in state(client)["groups"] for r in g["receipts"] if r["id"] == manifest["id"])
+    assert not receipt["complete"] and receipt["complete_source"] is None
 
 
 def test_ambiguous_extraction_keeps_manual_fields_empty(runtime, monkeypatch):
@@ -460,10 +489,11 @@ def test_schema_one_migration_preserves_manual_timestamps(tmp_path):
     connection.close()
     store = Store(settings)
     with store.transaction() as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
         manual = dict(connection.execute("SELECT * FROM receipts WHERE id='manual'").fetchone())
         assert manual["date"] == "2021-12-21" and manual["time"] == "12:45:42"
         assert manual["field_source"] == "manual" and manual["timestamp_review"] == 0
+        assert manual["complete_source"] is None  # legacy rows keep unknown provenance, not invented provenance
         missing = dict(connection.execute("SELECT * FROM receipts WHERE id='missing'").fetchone())
         assert missing["time"] is None and missing["timestamp_review"] == 1
 

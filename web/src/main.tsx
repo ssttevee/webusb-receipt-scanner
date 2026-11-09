@@ -14,7 +14,8 @@ type Manifest = { id: string; kind: "scanner-raw" | "image"; sha256: string; byt
 type Pending = { id: string; created: number; blob: Blob; manifest: Manifest };
 type Diagnostic = { id: string; blob: Blob; metadata: unknown };
 type Receipt = { id: string; group_id: string; date: string | null; time: string | null; state: string;
-  complete: number; readable: number; vendor: string | null; error: string | null; languages: string[];
+  complete: number; readable: number; complete_source: string | null; readable_source: string | null;
+  vendor: string | null; error: string | null; languages: string[];
   field_source: "manual" | "ocr" | "unresolved" | "confirmed"; timestamp_review: number; analysis?: AnalysisRun | null };
 type AnalysisRun = { id: string; version: number; mode: string; state: string; error: string | null; has_evidence: boolean;
   policy: { requested: { date_order: string | null; century: string | number | null; expected_month?: string | null };
@@ -217,6 +218,8 @@ function ReceiptEditor({ receipt, group, refresh, selected, select, report, onDi
           <label class="check"><input type="checkbox" checked={readable} onChange={event => { setReadable(event.currentTarget.checked); setDirty(true); }} /> Selected image is readable</label>
           <button type="submit">Save review</button>
         </div>
+        {receipt.complete_source === "transport" && <p class="proof">The scanner's end-of-page report carried this page through whole: the bottom flag is measured, not judged. You still own legibility.</p>}
+        {receipt.complete_source === "operator" && <p class="proof">An earlier review already attested this page's physical bottom and legibility.</p>}
       </fieldset>
     </form>
     {receipt.state === "ready" && <AnalysisControls receipt={receipt} group={group} refresh={refresh} report={report} />}
@@ -350,6 +353,12 @@ function primaryFix(group: Group, jobs: Job[], confirmIds: Set<string>, approveI
       return confirmIds.has(group.id) ? { kind: "confirm", hint: `Confirm ${reviewing} stored proposal${reviewing === 1 ? "" : "s"} in ${groupTitle(group)}`, count: reviewing } : null;
     case "incomplete":
     case "unreadable":
+      // One Confirm call sets both flags and clears the review in a single UPDATE (api.py:313).
+      // When every unattested page still carries its stored proposal, Confirm clears everything,
+      // and attest would only be a slower way to do the same work - then fall back to attest,
+      // which the endpoint can reach even for pages whose proposal was replaced by hand.
+      if (confirmIds.has(group.id) && group.receipts.every(receipt => (receipt.complete && receipt.readable) || receipt.timestamp_review === 1))
+        return { kind: "confirm", hint: `Confirm ${reviewing} stored proposal${reviewing === 1 ? "" : "s"} in ${groupTitle(group)} — also attests bottom and legibility`, count: reviewing };
       return { kind: "attest", hint: `Attest bottom and legibility for ${unattested} page${unattested === 1 ? "" : "s"} in ${groupTitle(group)}`, count: unattested };
     default:
       return null;
@@ -603,7 +612,10 @@ function App() {
   const approveGroups = reviewGroups.filter(group => quickEligible(group) && group.receipts.every(receipt =>
     !receipt.timestamp_review && receipt.field_source === "confirmed" && Boolean(receipt.complete) && Boolean(receipt.readable)));
   const confirmBucket = confirmGroups.filter(group => !attentionIds.has(group.id));
-  const confirmIds = new Set(confirmBucket.map(group => group.id));
+  // One-call Confirm eligibility, at the server's full scope: confirm-proposed attests bottom and
+  // legibility too, so an attention-flagged group whose pages still hold their proposals belongs
+  // here even though the display bucket keeps them under "fix".
+  const confirmIds = new Set(confirmGroups.map(group => group.id));
   const approveBucket = reviewGroups.filter(group => !attentionIds.has(group.id) && !confirmIds.has(group.id));
   const finalizingGroups = state.groups.filter(group => group.state === "finalizing");
   const approvedGroups = state.groups.filter(group => group.state === "approved");

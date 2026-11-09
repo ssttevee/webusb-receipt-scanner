@@ -188,8 +188,12 @@ def create_app(settings=None, drive=None):
             group_id = str(uuid.uuid4())
             now = time.time()
             connection.execute("INSERT INTO groups(id,created) VALUES(?,?)", (group_id, now))
-            connection.execute("INSERT INTO receipts(id,group_id,languages,created) VALUES(?,?,?,?)",
-                               (identity, group_id, encode(manifest["languages"]), now))
+            # The capture protocol only accepts fully transported pages — transport_complete and
+            # last_frame are enforced literals — so a scanner-origin finalize is physical proof
+            # that the paper's bottom edge crossed the sensor. A browser image import only claims it.
+            transported = manifest["kind"] == "scanner-raw"
+            connection.execute("INSERT INTO receipts(id,group_id,languages,complete,complete_source,created) VALUES(?,?,?,?,?,?)",
+                (identity, group_id, encode(manifest["languages"]), int(transported), "transport" if transported else None, now))
             ensure_run(store, connection, connection.execute("SELECT * FROM receipts WHERE id=?", (identity,)).fetchone())
             store.enqueue(connection, "process", identity)
         return {"id": identity, "sha256": manifest["sha256"], "durable": True}
@@ -310,7 +314,8 @@ def create_app(settings=None, drive=None):
                     skipped.append({"id": identity, "reason": "analysis-running"}); continue
                 if not receipt["timestamp_review"]:
                     skipped.append({"id": identity, "reason": "already-confirmed"}); continue
-                connection.execute("UPDATE receipts SET complete=1, readable=1, field_source='confirmed', timestamp_review=0 WHERE id=?", (identity,))
+                connection.execute("UPDATE receipts SET complete=1, readable=1, field_source='confirmed', timestamp_review=0, "
+                    "complete_source='operator', readable_source='operator' WHERE id=?", (identity,))
                 if receipt["group_id"] not in touched:
                     store.changed(connection, receipt["group_id"]); touched.add(receipt["group_id"])
                 confirmed.append({"id": identity, "group_id": receipt["group_id"]})
@@ -328,7 +333,8 @@ def create_app(settings=None, drive=None):
                 new_id = str(uuid.uuid4())
                 connection.execute("INSERT INTO groups(id,created) VALUES(?,?)", (new_id, time.time()))
                 connection.execute("UPDATE receipts SET group_id=?,page_order=1 WHERE id=?", (new_id, identity))
-            connection.execute("UPDATE receipts SET date=?,time=?,vendor=?,complete=?,readable=?,field_source='manual',timestamp_review=0 WHERE id=?",
+            connection.execute("UPDATE receipts SET date=?,time=?,vendor=?,complete=?,readable=?,field_source='manual',timestamp_review=0, "
+                "complete_source='operator', readable_source='operator' WHERE id=?",
                 (change.date, change.time, change.vendor, change.complete, change.readable, identity))
             store.regroup(connection, identity)
             current = receipt_row(connection, identity)
@@ -344,7 +350,7 @@ def create_app(settings=None, drive=None):
             group = group_for_edit(connection, receipt["group_id"], change.version)
             if receipt["state"] != "ready":
                 fail("Wait for image processing before reviewing")
-            connection.execute("UPDATE receipts SET complete=?, readable=? WHERE id=?",
+            connection.execute("UPDATE receipts SET complete=?, readable=?, complete_source='operator', readable_source='operator' WHERE id=?",
                 (int(change.complete), int(change.readable), identity))
             store.changed(connection, group["id"])
             version = store.group(connection, group["id"])["version"]
