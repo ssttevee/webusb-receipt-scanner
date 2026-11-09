@@ -693,8 +693,10 @@ test("the details dialog ranks stamp processing and lets the operator choose it"
     const png = await page.evaluate(() => {
       const canvas = document.createElement("canvas"); canvas.width = 640; canvas.height = 1200;
       const context = canvas.getContext("2d"); context.fillStyle = "white"; context.fillRect(0, 0, 640, 1200);
-      context.fillStyle = "black"; context.font = "32px sans-serif";
-      context.fillText("Transaction", 30, 80); context.fillText("2026-09-14 17:21:30", 30, 150);
+      // A wide printed stamp line like a real thermal receipt's: the crop that gets ranked is
+      // wider than the dialog itself, which is what pushed the caption past its card border.
+      context.fillStyle = "black"; context.font = "60px sans-serif";
+      context.fillText("Transaction", 30, 80); context.fillText("2026-09-14 17:21:30", 10, 170);
       context.fillText("THANK YOU", 30, 1150);
       return canvas.toDataURL("image/png").split(",")[1];
     });
@@ -717,6 +719,24 @@ test("the details dialog ranks stamp processing and lets the operator choose it"
       `the reads must show what OCR found: ${rows.map(row => row.read).join(" | ")}`);
     assert.equal(rows.filter(row => row.inUse).length, 1, "exactly one recipe is in use before the operator says otherwise");
     assert(rows.some(row => row.pick));
+    // The caption belongs inside its card: in a narrow window the crop and caption stack instead
+    // of the text spilling past the card border and being cut off by the dialog edge.
+    for (const width of [560, 980]) {
+      await page.setViewportSize({ width, height: 900 });
+      await page.waitForTimeout(250);
+      assert(await page.evaluate(() => {
+        const dialog = document.querySelector("dialog.editor").getBoundingClientRect();
+        return [...document.querySelectorAll(".variant-list li")].every(li => {
+          if (li.scrollWidth > li.clientWidth + 1) return false;  // nothing overflows the card itself
+          const card = li.getBoundingClientRect();
+          return [...li.querySelectorAll("img,div,p,button")].every(node => {
+            const box = node.getBoundingClientRect();
+            return box.left >= card.left - 1 && box.right <= card.right + 1 && box.right <= dialog.right + 1;
+          });
+        });
+      }), `at ${width}px every variant card must keep its crop and caption inside itself and inside the dialog`);
+    }
+    await page.setViewportSize({ width: 1280, height: 900 });
     const machinePick = rows.findIndex(row => row.pick);
     const operatorChoice = rows.findIndex((_, index) => index !== machinePick);
     await page.locator(".variant-list li").nth(operatorChoice).getByRole("button", { name: "Use this" }).click();
