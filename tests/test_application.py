@@ -328,6 +328,43 @@ def test_delete_blocks_running_processing_and_approved_groups(runtime):
     assert (store.settings.work / 'captures' / identity).exists()
 
 
+def test_approved_export_deletion_purges_rows_and_files(runtime):
+    client, store = runtime
+    manifest, _ = capture(client, store)
+    review(client, manifest["id"])
+    group = state(client)["groups"][0]
+    export = prepared(client, group)
+    assert client.post(f"/api/groups/{group['id']}/approve",
+                       json={"export_id": export["id"], "version": group["version"]}).status_code == 202
+    reserved = state(client)["groups"][0]["version"]
+    # Stale views, unknown ids, and a still-finalizing export are all refused.
+    assert client.request("DELETE", f"/api/exports/{export['id']}", json={"version": reserved - 1}).status_code == 409
+    assert client.request("DELETE", f"/api/exports/{str(uuid.uuid4())}", json={"version": reserved}).status_code == 404
+    assert client.request("DELETE", f"/api/exports/{export['id']}", json={"version": reserved}).status_code == 409
+    assert run_one(store) and run_one(store)  # Durable commit, then cleanup.
+    assert state(client)["groups"][0]["state"] == "approved"
+    archived_pdf = store.settings.archive / export["path"]
+    assert archived_pdf.exists() and (store.settings.archive / ".exports" / export["id"]).is_dir()
+    assert client.request("DELETE", f"/api/exports/{export['id']}", json={"version": reserved - 1}).status_code == 409
+    assert client.request("DELETE", f"/api/exports/{export['id']}", json={"version": reserved}).status_code == 200
+    assert state(client)["groups"] == []
+    assert not archived_pdf.exists()
+    assert not (store.settings.archive / ".exports" / export["id"]).exists()
+    assert not (store.settings.work / "captures" / manifest["id"]).exists()
+    with store.transaction() as connection:
+        assert not connection.execute("SELECT 1 FROM exports WHERE id=?", (export["id"],)).fetchone()
+        assert not connection.execute("SELECT 1 FROM groups WHERE id=?", (group["id"],)).fetchone()
+        assert not connection.execute("SELECT 1 FROM receipts WHERE id=?", (manifest["id"],)).fetchone()
+        assert not connection.execute("SELECT 1 FROM captures WHERE id=?", (manifest["id"],)).fetchone()
+        assert not connection.execute("SELECT 1 FROM jobs WHERE target=? OR target=?",
+                                      (export["id"], manifest["id"])).fetchone()
+    # A repeat delete finds nothing; the freed dated path can serve a rescanned receipt.
+    assert client.request("DELETE", f"/api/exports/{export['id']}", json={"version": reserved}).status_code == 404
+    second, _ = capture(client, store)
+    review(client, second["id"])
+    assert prepared(client, state(client)["groups"][0])["path"] == export["path"]
+
+
 def test_automatic_proposal_prefills_fields_but_cannot_confirm_itself(runtime, monkeypatch):
     from server.extraction import Line, extract
     import server.worker as worker

@@ -828,7 +828,13 @@ function App() {
                 setSendingExport(item.id);
                 try { await api(`/api/exports/${item.id}/drive`); await refresh(); setStatus("Selected approved PDF queued for Drive delivery."); }
                 catch (error) { setStatus(String(error)); } finally { setSendingExport(""); }
-              }}>{item.drive_id ? "Delivered to Drive" : "Send approved PDF to Drive"}</button></div></div>)}
+              }}>{item.drive_id ? "Delivered to Drive" : "Send approved PDF to Drive"}</button>
+              <button class="secondary" disabled={Boolean(sendingExport)} onClick={async () => {
+                if (!window.confirm("Delete this approved scan from this computer? Its archive PDF and staging images are removed. Any Google Drive copy stays in the cloud. Rescanning the paper starts over.")) return;
+                setSendingExport(item.id);
+                try { await api(`/api/exports/${item.id}`, { version: group.version }, "DELETE"); await refresh(); setStatus("Approved scan deleted from this computer."); }
+                catch (error) { setStatus(String(error)); } finally { setSendingExport(""); }
+              }}>Delete approved scan</button></div></div>)}
         </div>)}
         {!exportsReady.length && !finalizingGroups.length && <section class="empty"><h2>No approved exports yet</h2><p>Approve a staging group to produce its PDF.</p></section>}
       </div>

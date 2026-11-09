@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -207,6 +207,45 @@ test("quick path confirms stored proposals and approves a batch without per-page
     const quick = await (await fetch(`${origin}/api/state`)).json();
     assert.match(quick.groups[0].exports[0].path, /2026\/09-September\/20260914-1721\.pdf/);
   }, false, true);
+});
+
+test("deleting an approved scan leaves the exports list, its rows, and its files on disk", { timeout: 120000 }, async () => {
+  await environment(async ({ page, directory, origin }) => {
+    page.on("dialog", dialog => dialog.accept());
+    const png = await page.evaluate(() => {
+      const canvas = document.createElement("canvas"); canvas.width = 640; canvas.height = 1200;
+      const context = canvas.getContext("2d"); context.fillStyle = "white"; context.fillRect(0, 0, 640, 1200);
+      context.fillStyle = "black"; context.font = "28px sans-serif";
+      context.fillText("Synthetic receipt", 30, 80); context.fillText("2026-09-14 17:21:30", 30, 150); context.fillText("BOTTOM", 30, 1150);
+      return canvas.toDataURL("image/png").split(",")[1];
+    });
+    await page.locator('input[type="file"]').setInputFiles({ name: "to-delete.png", mimeType: "image/png", buffer: Buffer.from(png, "base64") });
+    await openEditor(page);
+    await page.waitForFunction(() => document.querySelector(".receipt .badge")?.textContent === "ready");
+    await page.getByLabel("Transaction date", { exact: true }).fill("2026-09-14");
+    await page.getByLabel("Transaction time", { exact: true }).fill("17:21:30");
+    await page.getByLabel("Physical bottom is present").check();
+    await page.getByLabel("Selected image is readable").check();
+    await page.getByRole("button", { name: "Save review", exact: true }).click();
+    await page.waitForFunction(() => document.querySelector('[role="status"]').textContent.includes("Review saved"));
+    await page.getByRole("button", { name: "Prepare approval", exact: true }).click();
+    await page.getByRole("button", { name: "Approve this version", exact: true }).click();
+    await page.waitForFunction(() => !document.querySelector("dialog.editor[open]"), null, { timeout: 15000 });
+    await page.getByRole("tab", { name: /^Exports/ }).click();
+    await page.getByRole("link", { name: "Download approved PDF" }).waitFor({ timeout: 30000 });
+    const approved = await (await fetch(`${origin}/api/state`)).json();
+    const [group] = approved.groups;
+    const exportId = group.exports[0].id;
+    await access(join(directory, "archive", group.exports[0].path));
+    await access(join(directory, "archive", ".exports", exportId));
+    await page.getByRole("button", { name: "Delete approved scan" }).click();
+    await page.getByRole("heading", { name: "No approved exports yet" }).waitFor({ timeout: 15000 });
+    assert.equal(await page.getByRole("link", { name: "Download approved PDF" }).count(), 0);
+    assert.equal((await (await fetch(`${origin}/api/state`)).json()).groups.length, 0);
+    await assert.rejects(access(join(directory, "archive", group.exports[0].path)));
+    await assert.rejects(access(join(directory, "archive", ".exports", exportId)));
+    await assert.rejects(access(join(directory, "work", "captures", group.receipts[0].id)));
+  });
 });
 
 test("the sidebar expected month defaults to last month and resolves an ambiguous numeric date", {

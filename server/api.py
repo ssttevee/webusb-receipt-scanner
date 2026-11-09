@@ -458,6 +458,53 @@ def create_app(settings=None, drive=None):
             store.enqueue(connection, "drive", identity)
         return {"queued": True}
 
+    @app.delete("/api/exports/{identity}")
+    def delete_export(identity: str, body: Version):
+        purge: list[Path] = []
+        with store.transaction() as connection:
+            export = connection.execute("SELECT * FROM exports WHERE id=?", (identity,)).fetchone()
+            if not export:
+                raise HTTPException(404, "Export not found")
+            if export["state"] != "ready":
+                fail("The export is still finalizing; it cannot be deleted yet")
+            group = store.group(connection, export["group_id"])
+            if group["version"] != body.version:
+                fail("The group changed; reload the export list first")
+            store.changed(connection, group["id"])
+            connection.execute(
+                "DELETE FROM jobs WHERE target=? AND kind IN('approve','drive','cleanup')", (identity,)
+            )
+            receipt_ids = [row["id"] for row in connection.execute(
+                "SELECT id FROM receipts WHERE group_id=?", (group["id"],)
+            ).fetchall()]
+            for receipt_id in receipt_ids:
+                connection.execute("DELETE FROM jobs WHERE kind='process' AND target=?", (receipt_id,))
+                connection.execute(
+                    "DELETE FROM jobs WHERE kind='analyze' AND target IN"
+                    "(SELECT id FROM analysis_runs WHERE receipt_id=?)", (receipt_id,)
+                )
+                connection.execute("DELETE FROM analysis_runs WHERE receipt_id=?", (receipt_id,))
+            connection.execute("DELETE FROM receipts WHERE group_id=?", (group["id"],))
+            for receipt_id in receipt_ids:
+                connection.execute("DELETE FROM captures WHERE id=?", (receipt_id,))
+            connection.execute("DELETE FROM exports WHERE group_id=?", (group["id"],))
+            connection.execute("DELETE FROM groups WHERE id=?", (group["id"],))
+            # The approved masters live in the private staging directory this export renamed
+            # its inputs into; they leave with the group. The archive PDF leaves too, so a
+            # re-scan of the same paper claims the dated path again. Work originals go
+            # whether or not the cleanup job already ran.
+            purge = [settings.archive / export["path"], settings.archive / ".exports" / identity]
+            purge += [settings.work / "captures" / receipt_id for receipt_id in receipt_ids]
+        for path in purge:
+            try:
+                if path.is_dir():
+                    shutil.rmtree(path)
+                elif path.exists():
+                    path.unlink()
+            except OSError:
+                pass
+        return {"id": identity, "state": "deleted"}
+
     @app.post("/api/jobs/{identity}/retry")
     def retry(identity: str):
         with store.transaction() as connection:
