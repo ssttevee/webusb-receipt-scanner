@@ -200,6 +200,18 @@ test("quick path confirms stored proposals and approves a batch without per-page
     const confirmed = await (await fetch(`${origin}/api/state`)).json();
     assert.equal(confirmed.groups[0].receipts[0].field_source, "confirmed");
     assert.equal(confirmed.groups[0].receipts[0].timestamp_review, 0);
+    // The confirmed group has nothing left to fix, so it leaves the ledger for the Approve tab,
+    // where its strip carries the accepted timestamp and Fix reopens the review dialog.
+    await page.getByRole("tab", { name: /^Approve/ }).click();
+    await page.waitForFunction(() => document.querySelectorAll(".approve-row").length === 1, null, { timeout: 30000 });
+    const quickRow = page.locator(".approve-row").first();
+    await page.waitForFunction(() => { const img = document.querySelector(".approve-row img.stamp-strip"); return Boolean(img && img.complete && img.naturalWidth > 0); }, null, { timeout: 15000 });
+    assert.ok(await quickRow.locator("img.stamp-strip").evaluate(img => img.complete && img.naturalWidth > 0),
+      "the row must show the binarized timestamp region the proposal was accepted from");
+    await quickRow.getByRole("button", { name: "Fix 2026-09-14" }).click();
+    await page.waitForFunction(() => document.querySelector("dialog.editor[open]")?.getAttribute("aria-label") === "Review group 2026-09-14", null, { timeout: 15000 });
+    await closeEditor(page);
+    await page.waitForFunction(() => !document.querySelector("dialog.editor"), null, { timeout: 5000 });
     await page.getByRole("button", { name: /^Approve ready groups/ }).click();
     await page.waitForFunction(() => [...document.querySelectorAll(".group .badge")].some(badge => badge.textContent === "approved"), null, { timeout: 30000 });
     await page.getByRole("tab", { name: /^Exports/ }).click();
@@ -433,9 +445,8 @@ test("the ledger confirms a proposal-carrying page in one action and falls back 
     await page.waitForFunction(id => Boolean(document.querySelector(`.cell[data-group-id="${id}"] .act.attest`)), blank.id, { timeout: 15000 });
     await page.locator(`.cell[data-group-id="${blank.id}"] .act.attest`).click();
     await page.waitForFunction(() => document.querySelector('[role="status"]').textContent.includes("Attested bottom"), null, { timeout: 15000 });
-    const blankCell = page.locator(`.cell[data-group-id="${blank.id}"]`);
-    assert.equal(await blankCell.getAttribute("data-severity"), "clear");
-    assert.equal(await blankCell.locator(".act").count(), 0, "a manually reviewed page keeps its approval decision in the dialog");
+    // A manual review plus attestation settles the group: it leaves the ledger entirely.
+    await page.waitForFunction(id => !document.querySelector(`.cell[data-group-id="${id}"]`), blank.id, { timeout: 15000 });
     // Back to the one-call path. One job, one name: the row button and the toolbar button are
     // the same verb at two scopes.
     assert.match(await page.getByRole("button", { name: /^Confirm ready pages/ }).textContent(), /\(1\)/);
@@ -448,9 +459,16 @@ test("the ledger confirms a proposal-carrying page in one action and falls back 
     assert.equal(confirmedPage.complete, 1);
     assert.equal(confirmedPage.readable, 1);
     assert.equal(confirmedPage.complete_source, "operator", "the approval snapshot must be able to say who attested the bottom");
-    await page.waitForFunction(id => document.querySelector(`.cell[data-group-id="${id}"][data-severity=clear] .act.approve`), proposal.id, { timeout: 15000 });
-    await page.locator(`.cell[data-group-id="${proposal.id}"] .act.approve`).click();
-    await page.waitForFunction(id => !document.querySelector(`.cell[data-group-id="${id}"]`), proposal.id, { timeout: 30000 });
+    // Confirming settles the proposal group too, so it crosses over to the Approve tab: strip,
+    // stamp, and a row-scoped Approve. The hand-typed group shows the empty slot beside it.
+    await page.waitForFunction(id => !document.querySelector(`.cell[data-group-id="${id}"]`), proposal.id, { timeout: 15000 });
+    await page.getByRole("tab", { name: /^Approve/ }).click();
+    const proposalRow = page.locator(`.approve-row[data-group-id="${proposal.id}"]`);
+    await proposalRow.waitFor({ timeout: 15000 });
+    await page.waitForFunction(id => { const img = document.querySelector(`.approve-row[data-group-id="${id}"] img.stamp-strip`); return Boolean(img && img.complete && img.naturalWidth > 0); }, proposal.id, { timeout: 15000 });
+    await page.waitForFunction(id => Boolean(document.querySelector(`.approve-row[data-group-id="${id}"] .stamp-fallback`)), blank.id, { timeout: 15000 });
+    await proposalRow.getByRole("button", { name: "Approve 2026-09-14", exact: true }).click();
+    await page.waitForFunction(id => !document.querySelector(`.approve-row[data-group-id="${id}"]`), proposal.id, { timeout: 30000 });
     await page.getByRole("tab", { name: /^Exports/ }).click();
     await page.getByRole("link", { name: "Download approved PDF" }).waitFor({ timeout: 30000 });
     const done = await (await page.request.get(`${origin}/api/state`)).json();
@@ -502,9 +520,14 @@ test("a dense confident scan arrives legibility auto-checked, leaving one keystr
     assert.equal(await page.locator(".cell .act.attest").count(), 0, "no separate attestation once legibility is settled and Confirm covers the rest");
     await page.locator(".cell .act.confirm").click();
     await page.waitForFunction(() => document.querySelector('[role="status"]').textContent.includes("Confirmed 2026-09-14"), null, { timeout: 15000 });
-    await page.waitForFunction(() => Boolean(document.querySelector(".cell[data-severity=clear] .act.approve")), null, { timeout: 15000 });
-    await page.locator(".cell .act.approve").click();
-    await page.waitForFunction(() => !document.querySelector(".cell"), null, { timeout: 30000 });
+    // One Confirm settles it, so the group crosses over to the Approve tab for its single click.
+    await page.waitForFunction(() => !document.querySelector(".cell"), null, { timeout: 15000 });
+    await page.getByRole("tab", { name: /^Approve/ }).click();
+    const denseRow = page.locator(".approve-row").first();
+    await denseRow.waitFor({ timeout: 15000 });
+    await page.waitForFunction(() => { const img = document.querySelector(".approve-row img.stamp-strip"); return Boolean(img && img.complete && img.naturalWidth > 0); }, null, { timeout: 15000 });
+    await denseRow.getByRole("button", { name: "Approve 2026-09-14", exact: true }).click();
+    await page.waitForFunction(() => !document.querySelector(".approve-row"), null, { timeout: 30000 });
     await page.getByRole("tab", { name: /^Exports/ }).click();
     await page.getByRole("link", { name: "Download approved PDF" }).waitFor({ timeout: 30000 });
     const done = await (await page.request.get(`${origin}/api/state`)).json();

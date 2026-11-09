@@ -388,6 +388,35 @@ function LedgerCell({ group, index, fix, focused, busy, edit, act }: {
   </section>;
 }
 
+// The proof a settled group is showing one: the binarized master rows behind the accepted OCR
+// timestamp, cropped server-side to the winning candidate's region. A page whose timestamp was
+// typed by hand has no such region; its slot stays empty instead of crying broken image.
+function TimestampStrip({ group }: { group: Group }) {
+  const receipt = group.receipts.find(item => item.date && item.time) ?? group.receipts[0];
+  const [missing, setMissing] = useState(false);
+  if (!receipt || missing) return <span class="stamp-fallback" title="No accepted OCR timestamp region for this page" />;
+  return <img class="stamp-strip" src={`/api/receipts/${receipt.id}/timestamp-strip`} loading="lazy"
+    alt={`Accepted timestamp region of ${groupTitle(group)}`} onError={() => setMissing(true)} />;
+}
+
+// One Approve-tab row: strip, stamp, and the two verbs. Approve is the one keystroke the quick
+// path already vets; Fix hands the group back to the full review dialog.
+function ApproveRow({ group, busy, approve, fix }: { group: Group; busy: boolean; approve: () => void; fix: () => void }) {
+  const title = groupTitle(group);
+  const clock = group.receipts.map(receipt => receipt.time).filter(Boolean).sort();
+  return <section class="approve-row" data-group-id={group.id} data-version={group.version}>
+    <TimestampStrip group={group} />
+    <p class="stamp-meta"><strong>{title}</strong>
+      {clock.length > 0 && <span>{clock.length === 1 || clock[0] === clock[clock.length - 1] ? clock[0] : `${clock[0]}–${clock[clock.length - 1]}`}</span>}
+      <em>{group.receipts.length} page{group.receipts.length === 1 ? "" : "s"}</em>
+      <span class="muted">{group.manual ? "manual grouping" : "same-minute grouping"}</span></p>
+    <div class="row"><button class="approve" disabled={busy} onClick={approve} aria-label={`Approve ${title}`}
+      title={`Prepare the dated PDF path and queue the export for ${title}`}>Approve</button>
+      <button class="secondary" disabled={busy} aria-haspopup="dialog" onClick={fix} aria-label={`Fix ${title}`}
+      title={`Open ${title} in the review dialog`}>Fix</button></div>
+  </section>;
+}
+
 function GroupEditor({ group, selected, select, refresh, report, close, focusDate }: {
   group: Group; selected: Set<string>; select: (id: string, value: boolean) => void;
   refresh: () => Promise<void>; report: (value: string) => void; close: () => void; focusDate: boolean;
@@ -481,18 +510,18 @@ function App() {
       return /^\d{4}-(0[1-9]|1[0-2])$/.test(saved) ? saved : ""; }
     catch { return lastMonth; }
   });
-  const [tab, setTab] = useState<"review" | "exports" | "jobs">(() => {
-    try { const saved = localStorage.getItem("receipt-workspace-tab"); return ["review", "exports", "jobs"].includes(saved ?? "") ? saved as "review" | "exports" | "jobs" : "review"; }
+  const [tab, setTab] = useState<"review" | "approve" | "exports" | "jobs">(() => {
+    try { const saved = localStorage.getItem("receipt-workspace-tab"); return ["review", "approve", "exports", "jobs"].includes(saved ?? "") ? saved as "review" | "approve" | "exports" | "jobs" : "review"; }
     catch { return "review"; }
   });
-  function showTab(value: "review" | "exports" | "jobs") {
+  function showTab(value: "review" | "approve" | "exports" | "jobs") {
     setTab(value);
     try { localStorage.setItem("receipt-workspace-tab", value); } catch { /* the choice applies to this visit */ }
   }
   const [sendingExport, setSendingExport] = useState("");
   const [quickBusy, setQuickBusy] = useState(false);
   const [busyGroups, setBusyGroups] = useState(new Set<string>());
-  const [ledgerStage, setLedgerStage] = useState<"all" | "attention" | "confirm" | "approve">("all");
+  const [ledgerStage, setLedgerStage] = useState<"all" | "attention" | "confirm">("all");
   const [cursor, setCursor] = useState<number | null>(null);
   const [focusDate, setFocusDate] = useState(false);
   const [scanner, setScanner] = useState<any>(null);
@@ -631,8 +660,11 @@ function App() {
     if (undatedFirst !== undatedSecond) return undatedFirst ? -1 : 1;
     return second.localeCompare(first);
   });
-  const stageGroups = { attention: orderLedger(attentionGroups), confirm: orderLedger(confirmBucket), approve: orderLedger(approveBucket) };
-  const ledger = ledgerStage === "all" ? [...stageGroups.attention, ...stageGroups.confirm, ...stageGroups.approve] : stageGroups[ledgerStage];
+  const stageGroups = { attention: orderLedger(attentionGroups), confirm: orderLedger(confirmBucket) };
+  const ledger = ledgerStage === "all" ? [...stageGroups.attention, ...stageGroups.confirm] : stageGroups[ledgerStage];
+  // A group with nothing left to fix stops being a ledger row: it waits on the Approve tab, where
+  // one keystroke approves it and Fix reopens the very dialog Review uses.
+  const approveLedger = orderLedger(approveBucket);
   // The key handler is registered once, so it reads the live ledger and cursor through refs: a
   // closure captured between polls can step onto the wrong group or one that no longer exists.
   const ledgerRef = useRef(ledger);
@@ -782,24 +814,32 @@ function App() {
     </section></aside>
     <section class="work">
       <nav class="tabs" aria-label="Workspace sections" role="tablist">
-        <button role="tab" class="tab" id="tab-review" aria-controls="panel-review" aria-selected={tab === "review"} onClick={() => showTab("review")}>Review<span class="tab-count">{reviewGroups.length}</span>{attentionGroups.length > 0 && <span class="tab-count alert" title="Groups that need attention">{attentionGroups.length}</span>}</button>
+        <button role="tab" class="tab" id="tab-review" aria-controls="panel-review" aria-selected={tab === "review"} onClick={() => showTab("review")}>Review<span class="tab-count">{attentionGroups.length + confirmBucket.length}</span>{attentionGroups.length > 0 && <span class="tab-count alert" title="Groups that need attention">{attentionGroups.length}</span>}</button>
+        <button role="tab" class="tab" id="tab-approve" aria-controls="panel-approve" aria-selected={tab === "approve"} onClick={() => showTab("approve")}>Approve<span class="tab-count">{approveLedger.length}</span></button>
         <button role="tab" class="tab" id="tab-exports" aria-controls="panel-exports" aria-selected={tab === "exports"} onClick={() => showTab("exports")}>Exports<span class="tab-count">{exportsReady.length}</span></button>
         <button role="tab" class="tab" id="tab-jobs" aria-controls="panel-jobs" aria-selected={tab === "jobs"} onClick={() => showTab("jobs")}>Jobs<span class="tab-count">{activeJobs.length}</span></button>
       </nav>
       <div class="panel" role="tabpanel" id="panel-review" aria-labelledby="tab-review" hidden={tab !== "review"}>
         <div class="toolbar"><div class="row"><button disabled={quickBusy || !confirmGroups.length} onClick={confirmReady}>Confirm ready pages ({confirmPages})</button>
-          <button class="secondary" disabled={quickBusy || !approveGroups.length} onClick={approveAll}>Approve ready groups ({approveGroups.length})</button>
           {selected.size > 0 && <><button onClick={combine}>Make selected pages a manual group ({selected.size})</button>
             <button class="secondary" onClick={() => setSelected(new Set())}>Clear selection</button></>}</div></div>
-        {reviewGroups.length > 0 && <div class="ledger-head"><span>Review · {reviewGroups.length}</span>
+        {ledger.length > 0 && <div class="ledger-head"><span>Review · {ledger.length}</span>
           <button class="filter" aria-pressed={ledgerStage === "attention"} onClick={() => setLedgerStage(ledgerStage === "attention" ? "all" : "attention")}>▲ fix {attentionGroups.length}</button>
           <button class="filter" aria-pressed={ledgerStage === "confirm"} onClick={() => setLedgerStage(ledgerStage === "confirm" ? "all" : "confirm")}>● one key {confirmBucket.length}</button>
-          <button class="filter" aria-pressed={ledgerStage === "approve"} onClick={() => setLedgerStage(ledgerStage === "approve" ? "all" : "approve")}>✓ go {approveGroups.length}</button>
           <span class="legend">J K step · Enter fix · O open · X date fix</span></div>}
         {ledger.length > 0 && <div class="ledger">{ledger.map((group, index) => <LedgerCell key={group.id} group={group} index={index}
           fix={primaryFix(group, state.jobs, confirmIds, approveIds)} focused={cursor === index} busy={quickBusy || busyGroups.has(group.id)}
           edit={() => openGroup(group)} act={() => { const fix = primaryFix(group, state.jobs, confirmIds, approveIds); return fix ? runFix(group, fix) : Promise.resolve(); }} />)}</div>}
-        {!reviewGroups.length && <section class="empty"><h2>Your staging area is ready</h2><p>Connect the scanner or import an unprocessed image to begin.</p></section>}
+        {!ledger.length && <section class="empty">{reviewGroups.length
+          ? <><h2>Nothing waits for judgment</h2><p>{approveLedger.length} settled {approveLedger.length === 1 ? "group is" : "groups are"} waiting on the Approve tab.</p></>
+          : <><h2>Your staging area is ready</h2><p>Connect the scanner or import an unprocessed image to begin.</p></>}</section>}
+      </div>
+      <div class="panel" role="tabpanel" id="panel-approve" aria-labelledby="tab-approve" hidden={tab !== "approve"}>
+        <div class="toolbar"><div class="row"><button disabled={quickBusy || !approveGroups.length} onClick={approveAll}>Approve ready groups ({approveGroups.length})</button>
+          <span class="muted">Each row needs one click: Approve reserves the dated PDF path and queues the export. Fix opens the same review dialog the ledger uses.</span></div></div>
+        {approveLedger.length > 0 && <div class="approve-list">{approveLedger.map(group => <ApproveRow key={group.id} group={group}
+          busy={quickBusy || busyGroups.has(group.id)} approve={() => approveGroup(group)} fix={() => openGroup(group)} />)}</div>}
+        {!approveLedger.length && <section class="empty"><h2>No scans are ready to approve</h2><p>A group arrives here once its date, physical bottom and legibility are all settled.</p></section>}
       </div>
       <div class="panel" role="tabpanel" id="panel-exports" aria-labelledby="tab-exports" hidden={tab !== "exports"}>
         <div class="row"><button disabled={connected || scanning || !state.drive.configured} onClick={async () => {

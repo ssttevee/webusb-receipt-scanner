@@ -104,6 +104,14 @@ dialog.editor>.approval,dialog.editor>.muted{margin:0 18px 16px}
 .cell .act.approve{background:var(--sev-ready);border-color:var(--sev-ready)}
 .cell .act.retry{background:#5b3a86;border-color:#5b3a86}
 .cell[data-focused]{outline:2px solid var(--sev-ready);outline-offset:1px}
+.approve-list{display:grid;gap:6px;align-content:start}
+.approve-row{display:grid;grid-template-columns:210px minmax(120px,1fr) auto;align-items:center;gap:14px;height:60px;padding:0 12px;background:white;border:1px solid #d4dfe4;border-left:4px solid var(--sev-ready);border-radius:8px}
+.approve-row .stamp-strip{width:210px;height:48px;object-fit:contain;object-position:left center;background:#f2f5f6;border:1px solid #c8d4da;border-radius:6px}
+.approve-row .stamp-fallback{display:block;width:210px;height:48px;background:#f2f5f6;border:1px dashed #c8d4da;border-radius:6px}
+.approve-row .stamp-meta{display:flex;align-items:baseline;gap:10px;min-width:0;margin:0;white-space:nowrap;overflow:hidden;font-size:.88rem;font-variant-numeric:tabular-nums;color:#12242c}
+.approve-row .stamp-meta strong{font-size:1.06rem;font-weight:700}
+.approve-row .stamp-meta em{font-style:normal;color:#5d737d;font-size:.76rem}
+.approve-row button.approve{background:var(--sev-ready);border-color:var(--sev-ready);color:white;font-weight:650}
 .group{padding:12px 14px}
 .group[data-severity=blocked]{border-left:4px solid var(--sev-blocked)}
 .group[data-severity=pending]{border-left:4px solid var(--sev-pending)}

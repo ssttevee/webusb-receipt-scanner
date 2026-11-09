@@ -1,4 +1,5 @@
 import hashlib
+import io
 import json
 import time
 import uuid
@@ -326,6 +327,28 @@ def test_delete_blocks_running_processing_and_approved_groups(runtime):
         connection.execute("UPDATE groups SET state='approved' WHERE id=?", (group['id'],))
     assert client.request('DELETE', f'/api/receipts/{identity}', json={'version': group['version']}).status_code == 409
     assert (store.settings.work / 'captures' / identity).exists()
+
+
+def test_timestamp_strip_shows_only_the_accepted_candidate_region(runtime, monkeypatch):
+    import server.worker as worker
+    client, store = runtime
+    # A page without an accepted OCR timestamp region answers honestly instead of blank-cropping.
+    plain, _ = capture(client, store)
+    assert client.get(f"/api/receipts/{plain['id']}/timestamp-strip").status_code == 404
+    store.settings.ocr = True
+    lines = [Line("2026-09-14 17:21:30", (0, 10, 500, 30), 95, "discovery"),
+             Line("2026-09-14 17:21:30", (0, 10, 500, 30), 95, "tile-00")]
+    proposal = extract(lines)
+    assert proposal["selected"], "the fixture must produce an accepted candidate"
+    monkeypatch.setattr(worker, "recognize", lambda *args, **kwargs: {"state": "done", "engine": "fixture", "extraction": proposal})
+    manifest, _ = capture(client, store)
+    strip = client.get(f"/api/receipts/{manifest['id']}/timestamp-strip")
+    assert strip.status_code == 200 and strip.headers["content-type"] == "image/png"
+    image = Image.open(io.BytesIO(strip.content))
+    box = next(item["box"] for item in proposal["candidates"] if item["id"] == proposal["selected"]["candidate_id"])
+    # Bilevel, full master width clamped to the page, the candidate rows padded by the line height.
+    assert image.mode == "1" and image.size == (20, 41)
+    assert box[1] == 10 and box[3] == 30
 
 
 def test_approved_export_deletion_purges_rows_and_files(runtime):

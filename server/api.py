@@ -232,6 +232,30 @@ def create_app(settings=None, drive=None):
             strip.save(buffer, format="PNG")
         return Response(buffer.getvalue(), media_type="image/png", headers={"X-Image-Height": str(master.height)})
 
+    @app.get("/api/receipts/{identity}/timestamp-strip")
+    def timestamp_strip(identity: str):
+        with store.transaction() as connection:
+            receipt = receipt_row(connection, identity)
+            evidence = json.loads(receipt["evidence"]) if receipt["evidence"] and receipt["master"] else None
+        extraction = (evidence or {}).get("extraction") or {}
+        selected = extraction.get("selected")
+        candidate = next((item for item in extraction.get("candidates", [])
+                          if item.get("id") == (selected or {}).get("candidate_id")), None)
+        if not candidate or not candidate.get("box"):
+            fail("This page has no accepted OCR timestamp region to show", 404)
+        x0, y0, x1, y1 = candidate["box"]
+        with Image.open(receipt["master"]) as master:
+            # The candidate box spans the master rows the accepted reading came from; pad by the
+            # line height for context, then force bilevel so the strip reads like the paper.
+            height = max(1, y1 - y0)
+            bottom = min(master.height, y1 + height // 2 + 1)
+            top = min(max(0, y0 - height // 2), max(0, bottom - 1))
+            strip = master.crop((max(0, x0 - height), top, min(master.width, x1 + height), bottom))
+            strip = strip.convert("1")
+            buffer = io.BytesIO()
+            strip.save(buffer, format="PNG")
+        return Response(buffer.getvalue(), media_type="image/png")
+
     @app.get("/api/receipts/{identity}/evidence")
     def evidence(identity: str, analysis_id: str | None = None):
         with store.transaction() as connection:
