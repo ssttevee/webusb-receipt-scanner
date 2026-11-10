@@ -1113,6 +1113,18 @@ test("the archived page is ruled on its own switch, and a reading recipe can nev
     assert.equal(await pageSwitch.getByRole("button", { name: "Global threshold", exact: true }).getAttribute("aria-pressed"), "true",
       "both windows must show the same page recipe in use");
     assert.equal((await ink()).dark, ruled.dark, "the page ruled from the strips is the page the details screen previews");
+    // A narrow window wraps the strip row, but every control in it stays inside the dialog: the page
+    // switch must never be pushed past an edge where the operator cannot reach it.
+    for (const width of [760, 1000]) {
+      await page.setViewportSize({ width, height: 900 });
+      await page.waitForTimeout(200);
+      assert(await page.evaluate(wide => [...document.querySelectorAll(".inspection-modal .row > *")].every(node => {
+        const box = document.querySelector(".inspection-modal").getBoundingClientRect();
+        const item = node.getBoundingClientRect();
+        return item.left >= box.left - 1 && item.right <= box.right + 1 && item.width > 0 && item.height > 0;
+      }), width), `at ${width}px every control in the strip row, including the page switch, must stay inside the dialog`);
+    }
+    await page.setViewportSize({ width: 1280, height: 900 });
   }, false, true);
 });
 
