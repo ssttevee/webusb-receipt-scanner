@@ -913,8 +913,14 @@ def test_image_render_toggle_previews_the_page_the_approved_export_will_make(run
     chosen = client.get(f"/api/receipts/{identity}/image?top=0&render=final")
     pixels = np.asarray(Image.open(io.BytesIO(chosen.content)).convert("L"))
     assert np.array_equal(pixels, enhanced_array(trimmed_gray(master), "otsu")[:pixels.shape[0]])  # honours the operator
-    full = client.get(f"/api/receipts/{identity}/image?render=final")  # and the whole page without a strip window
+    full = client.get(f"/api/receipts/{identity}/image?render=final")  # the details screen's whole page
     assert full.status_code == 200 and full.content[:4] == b"\x89PNG"
+    page = Image.fromarray(enhanced_array(trimmed_gray(master), "otsu"), mode="L")
+    fitted = Image.open(io.BytesIO(full.content))
+    assert fitted.size == page.size  # this fixture fits the preview box, so nothing is resampled
+    assert np.asarray(fitted.convert("L")).shape == page.size[::-1]
+    assert set(np.unique(np.asarray(fitted.convert("L")))) <= {0, 255}  # the page preview stays bilevel too
+    assert client.get(f"/api/receipts/{identity}/image?top=99999&render=final").status_code == 200  # past the trim: clamps, never breaks
 
 
 def test_binarization_choice_stops_once_approval_starts(runtime):

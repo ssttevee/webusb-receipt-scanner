@@ -83,10 +83,14 @@ dialog.inspection[open]{display:flex}
 dialog.inspection::backdrop{background:transparent}
 .inspection-modal{display:flex;flex-direction:column;background:white;border-radius:14px;width:min(1100px,100%);max-height:calc(100dvh - 36px);padding:16px 18px;overflow:hidden}
 .inspection-head{display:flex;align-items:center;justify-content:space-between;gap:14px}
-/* Raw scan vs final export page: one segmented control, never two competing page views. */
-.render-toggle{display:inline-flex;margin-left:auto;border:1px solid #c8d4da;border-radius:8px;overflow:hidden}
+/* Raw scan vs final export page: one segmented control, never two competing page views. It sits
+   at the head of the details screen's control column and at the end of the inspection strip row. */
+.render-toggle{display:inline-flex;border:1px solid #c8d4da;border-radius:8px;overflow:hidden}
 .render-toggle button{border:0;border-radius:0;padding:7px 12px}
 .render-toggle button[aria-pressed="true"]{background:#175d50;color:white}
+.inspection-modal .render-toggle{margin-left:auto}
+.scan-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:10px 0 0}
+.scan-head .muted{flex:1 1 180px;min-width:0}
 .inspection-modal .strip{overflow:auto;background:#e8edef;margin:12px 0;flex:1;min-height:0}
 .strip img{display:block;max-width:none}
 dialog.editor{width:min(1000px,94vw);max-height:88dvh;margin:auto;padding:0;border:1px solid #d4dfe4;border-radius:14px;background:white;box-shadow:0 12px 44px #142a3540;overflow:hidden}

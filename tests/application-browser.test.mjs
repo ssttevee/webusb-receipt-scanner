@@ -92,19 +92,36 @@ test("browser queue survives a lost acknowledgment and reload, then review/appro
     await page.getByLabel("Selected image is readable").check();
     await page.getByRole("button", { name: "Save review", exact: true }).click();
     await page.waitForFunction(() => document.querySelector('[role="status"]').textContent.includes("Review saved"));
+    // The full page on the details screen carries the same raw/final choice as the inspection
+    // dialog: one rendering decision per page, so the two windows can never disagree.
+    const rawAspect = await page.evaluate(() => { const img = document.querySelector(".receipt .thumbnail");
+      return img.naturalWidth / img.naturalHeight; });
+    assert.match(await page.locator(".receipt .thumbnail").getAttribute("alt"), /raw scan preview/);
+    await page.locator(".scan-head").getByRole("button", { name: "Final binarized", exact: true }).click();
+    await page.waitForFunction(() => { const img = document.querySelector(".receipt .thumbnail");
+      return img.complete && img.src.includes("render=final") && img.naturalWidth > 0; });
+    assert.match(await page.locator(".receipt .thumbnail").getAttribute("alt"), /approved export page preview/);
+    assert.match(await page.locator(".scan-head").textContent(), /as the approved PDF will archive it/);
+    assert.equal(await page.locator(".scan-head").getByRole("button", { name: "Raw scan", exact: true }).getAttribute("aria-pressed"), "false");
+    assert(Math.abs(await page.evaluate(() => { const img = document.querySelector(".receipt .thumbnail");
+      return img.naturalWidth / img.naturalHeight; }) - rawAspect) < 0.02);  // same page, just rendered
+    await page.locator(".scan-head").getByRole("button", { name: "Raw scan", exact: true }).click();
+    await page.waitForFunction(() => { const img = document.querySelector(".receipt .thumbnail");
+      return !img.src.includes("render=final") && img.complete && img.naturalWidth === 640; });
     await page.getByRole("button", { name: "Inspect full-resolution strips & OCR" }).click();
     await page.getByRole("button", { name: "Physical bottom", exact: true }).click();
     await page.waitForFunction(() => document.querySelector(".strip img")?.complete && document.querySelector(".strip img").naturalWidth === 640);
     // The same window, rendered as the approved PDF will archive it: bilevel, trimmed, honouring
     // the page's chosen stamp processing. The toggle must swap pixels without losing the row.
-    await page.getByRole("button", { name: "Final binarized", exact: true }).click();
+    await page.locator(".inspection-modal").getByRole("button", { name: "Final binarized", exact: true }).click();
     await page.waitForFunction(() => document.querySelector(".strip img")?.src.includes("render=final")
       && document.querySelector(".strip img").complete && document.querySelector(".strip img").naturalWidth > 0);
     assert.equal(await page.evaluate(() => document.querySelector(".strip img").alt.includes("binarized export")), true);
-    assert.equal(await page.getByRole("button", { name: "Raw scan", exact: true }).getAttribute("aria-pressed"), "false");
-    assert.equal(await page.getByRole("button", { name: "Final binarized", exact: true }).getAttribute("aria-pressed"), "true");
+    assert.equal(await page.locator(".inspection-modal").getByRole("button", { name: "Raw scan", exact: true }).getAttribute("aria-pressed"), "false");
+    assert.equal(await page.locator(".inspection-modal").getByRole("button", { name: "Final binarized", exact: true }).getAttribute("aria-pressed"), "true");
+    assert(await page.evaluate(() => document.querySelector(".receipt .thumbnail").src.includes("render=final")));  // one choice, both windows
     const binarizedRow = await page.evaluate(() => new URL(document.querySelector(".strip img").src).searchParams.get("top"));
-    await page.getByRole("button", { name: "Raw scan", exact: true }).click();
+    await page.locator(".inspection-modal").getByRole("button", { name: "Raw scan", exact: true }).click();
     await page.waitForFunction(row => { const img = document.querySelector(".strip img");
       return !img.src.includes("render=final") && img.complete && img.naturalWidth === 640
         && new URL(img.src).searchParams.get("top") === row; }, binarizedRow);

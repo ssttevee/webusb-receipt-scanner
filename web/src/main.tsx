@@ -181,6 +181,20 @@ async function uploadPending(onStatus: (value: string) => void, onChange: () => 
   finally { uploadRunning = false; onChange(); }
 }
 
+// Which rendering of a page the operator is looking at. One control, two windows on it: the
+// details screen's full page and the inspection dialog's strips. Both ask the same endpoint for
+// the same pipeline, so neither can show a page the approved export wouldn't make.
+type RenderMode = "raw" | "final";
+
+function RenderToggle({ render, setRender }: { render: RenderMode; setRender: (value: RenderMode) => void }) {
+  return <span class="render-toggle" role="group" aria-label="Which image to show">
+    <button aria-pressed={render === "raw"} class={render === "raw" ? "" : "secondary"} onClick={() => setRender("raw")}
+      title="The lossless scan exactly as captured">Raw scan</button>
+    <button aria-pressed={render === "final"} class={render === "final" ? "" : "secondary"} onClick={() => setRender("final")}
+      title="The page as the approved PDF exports it: blank-feed and dark-edge trim, then this page's chosen stamp processing">Final binarized</button>
+  </span>;
+}
+
 function ReceiptEditor({ receipt, group, refresh, selected, select, report, onDirty }: {
   receipt: Receipt; group: Group; refresh: () => Promise<void>; selected: boolean;
   select: (value: boolean) => void; report: (value: string) => void;
@@ -195,8 +209,9 @@ function ReceiptEditor({ receipt, group, refresh, selected, select, report, onDi
   const [row, setRow] = useState(0);
   const [height, setHeight] = useState(512);
   // The page image is worth seeing both ways: what the scanner printed, and what the approved
-  // PDF will actually archive. The endpoint renders both from the same page pipeline.
-  const [render, setRender] = useState<"raw" | "final">("raw");
+  // PDF will actually archive. One choice per page drives both this screen's full page and
+  // the inspection strips, so the two views can never disagree about what is on screen.
+  const [render, setRender] = useState<RenderMode>("raw");
   const [evidence, setEvidence] = useState<unknown>(null);
   const [extraction, setExtraction] = useState<Extraction | null>(null);
   const [ranking, setRanking] = useState<BinarizationRanking | null>(null);
@@ -269,7 +284,11 @@ function ReceiptEditor({ receipt, group, refresh, selected, select, report, onDi
     <header class="row"><label><input type="checkbox" checked={selected} disabled={group.state !== "staging"}
       onChange={event => select(event.currentTarget.checked)} /> Select page <code>{receipt.id.slice(0, 8)}</code></label>
       <span class="badge">{receipt.state}</span></header>
-    {receipt.state === "ready" && <img class="thumbnail" src={`/api/receipts/${receipt.id}/image`} alt={`Receipt ${receipt.id.slice(0, 8)} preview`} loading="lazy" onClick={inspect} />}
+    {receipt.state === "ready" && <div class="scan-head"><RenderToggle render={render} setRender={setRender} />
+      <span class="muted">{render === "final" ? "The page as the approved PDF will archive it: trimmed, then this page's chosen stamp processing."
+        : "The scan exactly as captured."} Click the page for full-resolution strips.</span></div>}
+    {receipt.state === "ready" && <img class="thumbnail" src={`/api/receipts/${receipt.id}/image${render === "final" ? "?render=final" : ""}`}
+      alt={`Receipt ${receipt.id.slice(0, 8)} ${render === "final" ? "approved export page" : "raw scan"} preview`} loading="lazy" onClick={inspect} />}
     {extraction && <section class="proposal"><strong>{extraction.selected ? "OCR timestamp proposal — confirm against the scan" : "Timestamp needs manual review"}</strong>
       {extraction.routing?.selected_engine === "rapidocr" && <p>RapidOCR fallback supplied this proposal. Inspect both engine source lists.</p>}
       {extraction.routing?.primary_issues.length ? <p class="muted">Primary OCR: {extraction.routing.primary_issues.map(issue => issue.replaceAll("_", " ")).join(" · ")}</p> : null}
@@ -381,12 +400,7 @@ function ReceiptEditor({ receipt, group, refresh, selected, select, report, onDi
           <label>Starting row<input type="number" min="0" max={height - 1} value={row} onInput={event => setRow(Math.max(0, Math.min(height - 1, Number(event.currentTarget.value))))} /></label>
           <button disabled={row + 512 >= height} onClick={() => setRow(row + 512)}>Next strip</button>
           <button onClick={() => setRow(Math.max(0, height - 512))}>Physical bottom</button>
-          <span class="render-toggle" role="group" aria-label="Which image to show">
-            <button aria-pressed={render === "raw"} class={render === "raw" ? "" : "secondary"} onClick={() => setRender("raw")}
-              title="The lossless scan exactly as captured">Raw scan</button>
-            <button aria-pressed={render === "final"} class={render === "final" ? "" : "secondary"} onClick={() => setRender("final")}
-              title="The page as the approved PDF exports it: blank-feed and dark-edge trim, then this page's chosen stamp processing">Final binarized</button>
-          </span></div>
+          <RenderToggle render={render} setRender={setRender} /></div>
         <div class="strip"><img src={`/api/receipts/${receipt.id}/image?top=${row}${render === "final" ? "&render=final" : ""}`}
           alt={`Full-resolution ${render === "final" ? "binarized export" : "raw scan"} rows ${row}–${Math.min(row + 512, height)}`} /></div>
         <details><summary>Unvalidated local OCR evidence</summary><pre>{JSON.stringify(evidence, null, 2)}</pre></details>
