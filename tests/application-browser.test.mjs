@@ -16,6 +16,12 @@ const sleep = milliseconds => new Promise(resolve => setTimeout(resolve, millise
 // full-word issue labels, and action buttons that spell their verb. Fields and approvals live in the row's modal editor.
 const openEditor = (page, timeout = 30000) => page.getByRole("button", { name: /^Edit group/ }).first().click({ timeout });
 const closeEditor = page => page.getByRole("button", { name: "Close", exact: true }).click();
+// A ready page proves it by showing its own image; the dialog's state line only appears while a page
+// is still working, so readiness is measured on the thing the operator actually looks at.
+const waitForReadyPage = (page, timeout = 60000) => page.waitForFunction(() => {
+  const image = document.querySelector(".receipt .scan-pane .thumbnail");
+  return Boolean(image && image.complete && image.naturalWidth > 0);
+}, null, { timeout });
 
 async function environment(callback, fixture = false, ocr = false) {
   const directory = await mkdtemp(join(process.env.APP_TEST_TEMP || tmpdir(), "receipt-app-test-"));
@@ -81,7 +87,7 @@ test("browser queue survives a lost acknowledgment and reload, then review/appro
     assert.equal(await page.getByLabel("Scan year century", { exact: true }).inputValue(), "1900");
     await page.waitForFunction(() => document.querySelector(".capture-panel").textContent.includes("0 browser copies pending"));
     await openEditor(page);
-    await page.waitForFunction(() => document.querySelector(".receipt .badge")?.textContent === "ready");
+    await waitForReadyPage(page);
     assert.equal(await page.locator(".receipt").count(), 1);
     const intake = await (await page.request.get(`${origin}/api/state`)).json();
     const savedCapture = await (await page.request.get(`${origin}/api/receipts/${intake.groups[0].receipts[0].id}/evidence`)).json();
@@ -170,7 +176,7 @@ test("production capture UI uses the compiled Epson backend and transfers an unc
     await page.waitForFunction(() => document.querySelector('[role="status"]').textContent.includes("receipt-longpaper-2"));
     await page.getByRole("button", { name: "Start session", exact: true }).click();
     await openEditor(page, 60000);
-    await page.waitForFunction(() => document.querySelector(".receipt .badge")?.textContent === "ready", null, { timeout: 60000 });
+    await waitForReadyPage(page);
     await closeEditor(page);
     await page.getByRole("button", { name: "Stop", exact: true }).click();
     await page.getByRole("button", { name: "Disconnect", exact: true }).click();
@@ -274,7 +280,7 @@ test("deleting an approved scan leaves the exports list, its rows, and its files
     });
     await page.locator('input[type="file"]').setInputFiles({ name: "to-delete.png", mimeType: "image/png", buffer: Buffer.from(png, "base64") });
     await openEditor(page);
-    await page.waitForFunction(() => document.querySelector(".receipt .badge")?.textContent === "ready");
+    await waitForReadyPage(page);
     await page.getByLabel("Transaction date", { exact: true }).fill("2026-09-14");
     await page.getByLabel("Transaction time", { exact: true }).fill("17:21:30");
     await page.getByLabel("Physical bottom is present").check();
@@ -371,7 +377,7 @@ test("a receipt-local convention reparses saved OCR and retains its prior analys
     });
     await page.locator('input[type="file"]').setInputFiles({ name: "ambiguous.png", mimeType: "image/png", buffer: Buffer.from(png, "base64") });
     await openEditor(page);
-    await page.waitForFunction(() => document.querySelector(".receipt .badge")?.textContent === "ready");
+    await waitForReadyPage(page);
     assert.equal(await page.getByLabel("Transaction date", { exact: true }).inputValue(), "");
     await page.getByText("Date convention & reprocess", { exact: true }).click();
     await page.getByLabel("Numeric date order", { exact: true }).selectOption("DMY");
@@ -516,6 +522,89 @@ test("the ledger confirms a proposal-carrying page in one action and falls back 
     await page.getByRole("link", { name: "Download approved PDF" }).waitFor({ timeout: 30000 });
     const done = await (await page.request.get(`${origin}/api/state`)).json();
     assert.match(done.groups.find(group => group.id === proposal.id).exports[0].path, /2026\/09-September\/20260914-1721\.pdf/);
+  }, false, true);
+});
+
+// Page selection belongs where the page's evidence is on screen, so it moved out of the details
+// dialog and into the ledger row's fixed left rail: one checkbox per page the row holds.
+test("the ledger row carries one page-selection checkbox per page and the details dialog carries none", {
+  timeout: 180000, skip: spawnSync("tesseract", ["--version"]).status !== 0,
+}, async () => {
+  await environment(async ({ page, origin }) => {
+    async function importReceipt(name, lines) {
+      const png = await page.evaluate(text => {
+        const canvas = document.createElement("canvas"); canvas.width = 640; canvas.height = 1200;
+        const context = canvas.getContext("2d"); context.fillStyle = "white"; context.fillRect(0, 0, 640, 1200);
+        context.fillStyle = "black"; context.font = "32px sans-serif";
+        text.forEach((line, index) => context.fillText(line, 30, 80 + index * 70));
+        return canvas.toDataURL("image/png").split(",")[1];
+      }, lines);
+      await page.locator('input[type="file"]').setInputFiles({ name, mimeType: "image/png", buffer: Buffer.from(png, "base64") });
+    }
+    // Same date, same minute, different seconds: the pair shares one staging group, so the row has to
+    // carry a checkbox for each page and there is a real split for the selection to perform.
+    await importReceipt("first.png", ["Transaction", "2026-09-14 17:21:30", "BOTTOM"]);
+    await importReceipt("second.png", ["Transaction", "2026-09-14 17:21:52", "BOTTOM"]);
+    let staged;
+    for (let attempt = 0; attempt < 250; attempt++) {
+      const state = await (await page.request.get(`${origin}/api/state`)).json();
+      const pages = state.groups.flatMap(group => group.receipts);
+      if (state.groups.length === 1 && pages.length === 2 && pages.every(receipt => receipt.state === "ready")
+        && pages.every(receipt => !["queued", "running"].includes(receipt.analysis?.state ?? "ready"))) { staged = state; break; }
+      await sleep(200);
+    }
+    assert.ok(staged, "the two same-minute scans must merge into one staging group");
+    const [group] = staged.groups;
+    const ids = group.receipts.map(receipt => receipt.id);
+    await page.reload();
+    const row = page.locator(`.cell[data-group-id="${group.id}"]`);
+    await row.waitFor({ timeout: 15000 });
+    // One checkbox per page, each named for its own page, in the row's rail.
+    const picks = row.locator(".picks .pick");
+    assert.equal(await picks.count(), ids.length);
+    for (const [index, id] of ids.entries())
+      assert.equal(await picks.nth(index).getAttribute("aria-label"), `Select page ${id.slice(0, 8)}`);
+    // Ticking a page must not disturb the row it sits in: the title, the crops and the row's own box
+    // stay exactly where they were.
+    const measure = async () => ({ row: await row.boundingBox(), ident: await row.locator(".ident").boundingBox(),
+      stamps: await row.locator(".stamps").boundingBox() });
+    const resting = await measure();
+    assert.ok(resting.row && resting.ident && resting.stamps, "the row and its evidence must be on screen to measure");
+    await picks.first().check();
+    assert.equal(await row.getAttribute("data-selected"), "true", "a row must show that a page in it is picked");
+    const settled = await measure();
+    for (const [name, before] of Object.entries(resting)) assert.deepEqual(settled[name], before, `ticking a page moved the row's ${name}`);
+    // A checkbox takes Space natively; it must not swallow the queue keys, and Enter on it must not
+    // commit the row's prefilled fields the way Enter in a date field does.
+    const versionBefore = (await (await page.request.get(`${origin}/api/state`)).json()).groups.find(item => item.id === group.id).version;
+    await picks.first().focus();
+    await page.keyboard.press("Enter");
+    await sleep(400);
+    assert.doesNotMatch(await page.locator('[role="status"]').textContent(), /Review saved/);
+    assert.equal((await (await page.request.get(`${origin}/api/state`)).json()).groups.find(item => item.id === group.id).version,
+      versionBefore, "Enter on a selection checkbox must not save the row's fields");
+    await page.keyboard.press("j");  // the queue keys still work with a checkbox in focus
+    assert.equal(await row.getAttribute("data-focused"), "true", "J must step the queue while a selection checkbox holds focus");
+    await page.keyboard.press("o");  // and O still opens the row under the cursor
+    const editor = page.locator("dialog.editor");
+    await editor.waitFor({ state: "visible", timeout: 15000 });
+    // Nothing here selects a page any more, and a ready page no longer needs a state line.
+    assert.equal(await editor.locator(".pick, [aria-label^='Select page']").count(), 0);
+    assert.equal(await editor.locator(".receipt").count(), 2, "both merged pages share this dialog");
+    for (const index of [0, 1]) assert.doesNotMatch(await editor.locator(".receipt").nth(index).textContent(), /Select page/);
+    assert.equal(await editor.locator(".receipt .page-state").count(), 0);
+    await closeEditor(page);
+    await page.waitForFunction(() => !document.querySelector("dialog.editor[open]"), null, { timeout: 15000 });
+    await page.getByRole("button", { name: /^Make selected pages a manual group/ }).click();
+    await page.waitForFunction(() => document.querySelector('[role="status"]').textContent.includes("Selected pages combined"), null, { timeout: 15000 });
+    const split = await (await page.request.get(`${origin}/api/state`)).json();
+    assert.equal(split.groups.length, 2, JSON.stringify(split.groups.map(item => item.receipts.length)));
+    const [moved] = split.groups.filter(item => item.manual === 1);
+    assert.ok(moved && moved.receipts.length === 1 && moved.receipts[0].id === ids[0], "the picked page must move out on its own");
+    assert.equal(split.groups.find(item => item.id === group.id).receipts.length, 1);
+    // The pick is cleared by the combine, so a stale tick cannot move a page into a later grouping.
+    await page.waitForFunction(() => [...document.querySelectorAll(".pick")].every(box => !box.checked), null, { timeout: 15000 });
+    await page.waitForFunction(() => !document.querySelector(".cell[data-selected]"), null, { timeout: 15000 });
   }, false, true);
 });
 

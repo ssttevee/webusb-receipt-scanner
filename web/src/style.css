@@ -41,13 +41,13 @@ input[type=file]::file-selector-button{font:inherit;font-weight:600;padding:6px 
 .pages{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,330px),1fr));gap:14px;align-items:start}
 @media(min-width:1100px){
 .pages>div:only-child>.receipt{display:grid;grid-template-columns:minmax(320px,44%) minmax(340px,1fr);column-gap:18px;align-items:start}
-.pages>div:only-child>.receipt>header{grid-column:1/-1}
-.pages>div:only-child>.receipt>.scan-pane{grid-column:1;grid-row:2/span 16;position:sticky;top:8px}
+.pages>div:only-child>.receipt>.scan-pane{grid-column:1;grid-row:1/span 16;position:sticky;top:8px}
 .pages>div:only-child>.receipt>.scan-pane .thumbnail{height:auto;max-height:64vh}
-.pages>div:only-child>.receipt>*:not(header):not(.scan-pane){grid-column:2}
+.pages>div:only-child>.receipt>*:not(.scan-pane){grid-column:2}
 }
 .receipt{border:1px solid #dfe6e9;border-radius:10px;padding:14px}
-.receipt header{display:flex;align-items:center;justify-content:space-between;gap:10px}
+/* Only pages that are still working carry a state line, so it needs no header row of its own. */
+.receipt .page-state{display:flex;align-items:center;gap:8px;margin:0 0 10px}
 .receipt .muted{font-size:.8rem}
 .thumbnail{display:block;width:100%;height:190px;object-fit:contain;background:#e8edef;border-radius:6px;margin:10px 0;cursor:zoom-in}
 .field-grid{display:grid;grid-template-columns:1fr 1fr;gap:4px 10px}
@@ -116,6 +116,11 @@ dialog.editor>.approval,dialog.editor>.muted{margin:0 18px 16px}
 .ledger{display:grid;gap:10px;align-content:start;max-width:1180px}
 .cell{display:grid;grid-template-columns:22px minmax(236px,1fr) minmax(316px,344px);grid-template-rows:auto auto;align-items:center;gap:10px 14px;min-height:92px;padding:10px 14px;background:white;border:1px solid #d4dfe4;border-left:4px solid #9fb2ba;border-radius:8px;font-size:.9rem}
 .cell>.glyph{grid-column:1/2;grid-row:1/2}
+/* One checkbox per page, stacked in page order under the severity dot. It sits in the row's fixed
+   22px rail, so ticking a page can never shift the title, the crops or the fields beside it. */
+.cell>.picks{grid-column:1/2;grid-row:2/3;align-self:start;display:flex;flex-direction:column;align-items:center;gap:7px;padding-top:1px}
+.cell>.picks .pick{width:15px;height:15px;margin:0;cursor:pointer;accent-color:#175d50}
+.cell>.picks .pick:disabled{cursor:not-allowed;opacity:.45}
 .cell>.ident{grid-column:2/3;grid-row:1/2;justify-self:start;max-width:100%}
 .cell>.stamps{grid-column:2/3;grid-row:2/3;align-self:start}
 .cell>.ruling{grid-column:3/4;grid-row:2/3;align-self:start}
@@ -133,6 +138,9 @@ dialog.editor>.approval,dialog.editor>.muted{margin:0 18px 16px}
 .cell[data-severity=blocked]{background:var(--sev-blocked-bg);border-color:var(--sev-blocked-edge);border-left-color:var(--sev-blocked)}
 .cell[data-severity=pending]{background:var(--sev-pending-bg);border-color:var(--sev-pending-edge);border-left-color:var(--sev-pending)}
 .cell[data-severity=clear]{background:var(--sev-ready-bg);border-color:var(--sev-ready-edge);border-left-color:var(--sev-ready)}
+/* A row with a page picked for manual grouping is marked with an outline, not a margin or a border
+   width: the row keeps the exact same box whether or not anything in it is ticked. */
+.cell[data-selected]{outline:2px solid #175d50;outline-offset:-2px}
 .cell .glyph{width:20px;height:20px;border-radius:99px;display:grid;place-items:center;font-size:.72rem;font-weight:700;color:white;background:#9fb2ba}
 .cell[data-severity=blocked] .glyph{background:var(--sev-blocked)}
 .cell[data-severity=pending] .glyph{background:var(--sev-pending)}

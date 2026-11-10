@@ -195,8 +195,8 @@ function RenderToggle({ render, setRender }: { render: RenderMode; setRender: (v
   </span>;
 }
 
-function ReceiptEditor({ receipt, group, refresh, selected, select, report, onDirty }: {
-  receipt: Receipt; group: Group; refresh: () => Promise<void>; selected: boolean;
+function ReceiptEditor({ receipt, group, refresh, select, report, onDirty }: {
+  receipt: Receipt; group: Group; refresh: () => Promise<void>;
   select: (value: boolean) => void; report: (value: string) => void;
   onDirty: (id: string, dirty: boolean) => void;
 }) {
@@ -281,9 +281,11 @@ function ReceiptEditor({ receipt, group, refresh, selected, select, report, onDi
     } catch (error) { report(String(error)); }
   }
   return <article class="receipt">
-    <header class="row"><label><input type="checkbox" checked={selected} disabled={group.state !== "staging"}
-      onChange={event => select(event.currentTarget.checked)} /> Select page <code>{receipt.id.slice(0, 8)}</code></label>
-      <span class="badge">{receipt.state}</span></header>
+    {/* The page's own state is only worth a line when it is not ready: a ready page proves it by
+        showing its image and its fields. Selection moved to the ledger row, where the page's crop is
+        on screen to judge against. */}
+    {receipt.state !== "ready" && <p class="page-state"><span class="badge">{receipt.state.replaceAll("_", " ")}</span>
+      <span class="muted">Page <code>{receipt.id.slice(0, 8)}</code> — fields unlock once this page is ready.</span></p>}
     {receipt.state === "ready" && <div class="scan-pane"><RenderToggle render={render} setRender={setRender} />
       <img class="thumbnail" src={`/api/receipts/${receipt.id}/image${render === "final" ? "?render=final" : ""}`}
         alt={`Receipt ${receipt.id.slice(0, 8)} ${render === "final" ? "approved export page" : "raw scan"} preview`} loading="lazy" onClick={inspect} /></div>}
@@ -546,10 +548,10 @@ function StampEvidence({ receipt, reading, limit = 2 }: { receipt: Receipt; read
 // One review row in two bands. The header line carries the group and the verbs that need no dialog;
 // below it, the printed evidence and the prefilled ruling form, where the crops can use the full
 // width of the row because nothing competes with them on their line.
-function LedgerCell({ group, index, fix, focused, busy, edit, act, draft, setDraft, save, readings }: {
+function LedgerCell({ group, index, fix, focused, busy, edit, act, draft, setDraft, save, readings, selected, pick }: {
   group: Group; index: number; fix: Fix; focused: boolean; busy: boolean; edit: () => void; act: () => Promise<void>;
   draft: Draft; setDraft: (value: string, field: "date" | "time") => void; save: () => Promise<void>;
-  readings: Record<string, StampReading>;
+  readings: Record<string, StampReading>; selected: Set<string>; pick: (id: string, value: boolean) => void;
 }) {
   const title = groupTitle(group);
   const chips = (group.state === "approval_failed" ? [{ code: "approval-failed", label: "approval failed", count: 1, hard: true }] : [])
@@ -562,9 +564,19 @@ function LedgerCell({ group, index, fix, focused, busy, edit, act, draft, setDra
   const evidence = group.receipts.slice(0, 2);
   const evidenceLimit = evidence.length > 1 ? 1 : 2;
   return <section class="cell" data-group-id={group.id} data-ledger-index={index} data-severity={groupSeverity(group)}
+    data-selected={group.receipts.some(receipt => selected.has(receipt.id)) || undefined}
     data-focused={focused || undefined} title={`${title} · version ${group.version} · ${group.manual ? "manual grouping" : "same-minute grouping"} · ${
       chips.map(chip => `${chip.label}${chip.count > 1 ? ` ×${chip.count}` : ""}`).join(" · ") || "no open issues"}`}>
     <span class={`glyph${working ? " working" : ""}`} aria-hidden="true">{SEVERITY_GLYPH[groupSeverity(group)]}</span>
+    {/* Selection is per page while a row is a group, and the crops above only ever show two pages, so
+        this rail carries one checkbox for every page the row holds: a page can never be hidden from
+        the manual-grouping selection because it did not fit in the row. */}
+    <span class="picks" role="group" aria-label={`Select pages of ${title} for manual grouping`}>
+      {group.receipts.map(receipt => <input key={receipt.id} type="checkbox" class="pick" data-page-id={receipt.id}
+        checked={selected.has(receipt.id)} disabled={group.state !== "staging"}
+        aria-label={`Select page ${receipt.id.slice(0, 8)}`}
+        title={`Page ${receipt.id.slice(0, 8)} · ${receipt.date || "no date"}${receipt.time ? ` ${receipt.time}` : ""} · ${receipt.state.replaceAll("_", " ")}`}
+        onChange={event => pick(receipt.id, event.currentTarget.checked)} />)}</span>
     <button class="ident" aria-haspopup="dialog" aria-label={`Edit group ${title}`} onClick={edit}>
       {title} <em>{group.receipts.length} page{group.receipts.length === 1 ? "" : "s"}</em></button>
     <span class="stamps" aria-label={`Printed timestamp evidence for ${title}`}>
@@ -615,8 +627,8 @@ function ApproveRow({ group, busy, approve, fix }: { group: Group; busy: boolean
   </section>;
 }
 
-function GroupEditor({ group, selected, select, refresh, report, close, focusDate }: {
-  group: Group; selected: Set<string>; select: (id: string, value: boolean) => void;
+function GroupEditor({ group, select, refresh, report, close, focusDate }: {
+  group: Group; select: (id: string, value: boolean) => void;
   refresh: () => Promise<void>; report: (value: string) => void; close: () => void; focusDate: boolean;
 }) {
   const [reservation, setReservation] = useState<Reservation | null>(null);
@@ -670,7 +682,7 @@ function GroupEditor({ group, selected, select, refresh, report, close, focusDat
       {group.state === "staging" && group.receipts.length > 1 && <div class="row"><span>Page {index + 1}</span>
         <button disabled={index === 0 || busy} onClick={() => act(() => move(index, -1))}>Move up</button>
         <button disabled={index === group.receipts.length - 1 || busy} onClick={() => act(() => move(index, 1))}>Move down</button></div>}
-      <ReceiptEditor key={receipt.id} receipt={receipt} group={group} refresh={refresh} selected={selected.has(receipt.id)} select={value => select(receipt.id, value)} report={report} onDirty={flagDirty} />
+      <ReceiptEditor key={receipt.id} receipt={receipt} group={group} refresh={refresh} select={value => select(receipt.id, value)} report={report} onDirty={flagDirty} />
     </div>)}</div>
     {dirtyPages.size > 0 && <p class="muted">Save or reload local field edits before approval.</p>}
     {reservation && group.state === "staging" && <div class="approval"><p>Reserved export path: <strong>{reservation.path}</strong></p>
@@ -832,6 +844,11 @@ function App() {
       setSelected(new Set()); await refresh(); setStatus("Selected pages combined/split in selection order. Manual grouping is retained.");
     } catch (error) { setStatus(String(error)); }
   }
+  // One page, one ruling about which group it belongs to. The ledger row's checkbox and the dialog's
+  // delete both go through here, so a page id is added and dropped the same way everywhere.
+  function pick(identity: string, value: boolean) {
+    setSelected(previous => { const next = new Set(previous); value ? next.add(identity) : next.delete(identity); return next; });
+  }
   const exportsReady = state.groups.flatMap(group => group.exports.filter(item => item.state === "ready"));
   const undelivered = exportsReady.filter(item => !item.drive_id);
   const activeJobs = state.jobs.filter(job => !["done"].includes(job.state));
@@ -916,15 +933,19 @@ function App() {
     function onKey(event: KeyboardEvent) {
       if (tab !== "review" || editingId || event.metaKey || event.ctrlKey || event.altKey) return;
       const target = event.target as HTMLElement | null;
+      // A row's selection checkbox is not a text field. It takes Space natively, and it must not
+      // swallow the queue keys either, so it is exempt from both field guards below: with a checkbox
+      // focused, J and K still walk the queue and O and X still open the row.
+      const isPick = target?.classList?.contains("pick");
       // Enter while a row's own field has focus commits that row, which is the keyboard loop most
       // people want here: read the stamp, type over the half that is wrong, Enter, next row.
-      if (target?.tagName === "INPUT" && event.key === "Enter") {
+      if (target?.tagName === "INPUT" && event.key === "Enter" && !isPick) {
         const identity = target.closest("[data-group-id]")?.getAttribute("data-group-id");
         const row = identity ? ledgerRef.current.find(group => group.id === identity) : undefined;
         if (row) { event.preventDefault(); void saveReview(row); }
         return;
       }
-      if (target && ["INPUT", "SELECT", "TEXTAREA"].includes(target.tagName)) return;
+      if (target && ["INPUT", "SELECT", "TEXTAREA"].includes(target.tagName) && !isPick) return;
       const groups = ledgerRef.current;
       const index = cursorRef.current === null ? -1 : Math.min(cursorRef.current, Math.max(0, groups.length - 1));
       const key = event.key.toLowerCase();
@@ -1080,7 +1101,7 @@ function App() {
           edit={() => openGroup(group)} act={() => { const fix = primaryFix(group, state.jobs, confirmIds, approveIds); return fix ? runFix(group, fix) : Promise.resolve(); }}
           draft={draftOf(group, readings, drafts[group.id])} setDraft={(value, field) => setDrafts(previous =>
             ({ ...previous, [group.id]: { ...draftOf(group, readings, drafts[group.id]), [field]: value } }))}
-          save={() => saveReview(group)} readings={readings} />)}</div>}
+          save={() => saveReview(group)} readings={readings} selected={selected} pick={pick} />)}</div>}
         {!ledger.length && <section class="empty">{reviewGroups.length
           ? <><h2>Nothing waits for judgment</h2><p>{approveLedger.length} settled {approveLedger.length === 1 ? "group is" : "groups are"} waiting on the Approve tab.</p></>
           : <><h2>Your staging area is ready</h2><p>Connect the scanner or import an unprocessed image to begin.</p></>}</section>}
@@ -1136,8 +1157,8 @@ function App() {
         }}>Retry</button>}</p>)}
         {!state.jobs.length && <section class="empty"><h2>No background jobs recorded</h2><p>Processing and delivery jobs appear here.</p></section>}
       </div>
-      {editingGroup && <GroupEditor key={editingGroup.id} group={editingGroup} selected={selected} focusDate={focusDate}
-        select={(id, value) => setSelected(previous => { const next = new Set(previous); value ? next.add(id) : next.delete(id); return next; })}
+      {editingGroup && <GroupEditor key={editingGroup.id} group={editingGroup} focusDate={focusDate}
+        select={pick}
         refresh={refresh} report={setStatus} close={() => { setEditingId(null); setFocusDate(false); }} />}
     </section>
   </main>;
