@@ -616,6 +616,70 @@ test("the ledger row carries one page-selection checkbox per page and the detail
   }, false, true);
 });
 
+// The row only ever draws two slots of evidence, so a third page has no crop to carry a checkbox.
+// Selection lives beside the row instead of on a crop, so every page stays selectable whatever the row
+// can show. This is the case that used to lose a page.
+test("a page the review row shows no crop for is still selectable for manual grouping", {
+  timeout: 240000, skip: spawnSync("tesseract", ["--version"]).status !== 0,
+}, async () => {
+  await environment(async ({ page, origin }) => {
+    async function importReceipt(name, seconds) {
+      const png = await page.evaluate(offset => {
+        const canvas = document.createElement("canvas"); canvas.width = 640; canvas.height = 1200;
+        const context = canvas.getContext("2d"); context.fillStyle = "white"; context.fillRect(0, 0, 640, 1200);
+        context.fillStyle = "black"; context.font = "32px sans-serif";
+        context.fillText("Transaction", 30, 80);
+        context.fillText(`2026-09-14 17:21:${String(offset).padStart(2, "0")}`, 30, 150);
+        context.fillText("BOTTOM", 30, 220);
+        return canvas.toDataURL("image/png").split(",")[1];
+      }, seconds);
+      await page.locator('input[type="file"]').setInputFiles({ name, mimeType: "image/png", buffer: Buffer.from(png, "base64") });
+    }
+    for (const [index, seconds] of [[0, 30], [1, 45], [2, 58]].entries()) await importReceipt(`page${index}.png`, seconds);
+    let staged;
+    for (let attempt = 0; attempt < 300; attempt++) {
+      const state = await (await page.request.get(`${origin}/api/state`)).json();
+      const pages = state.groups.flatMap(group => group.receipts);
+      if (state.groups.length === 1 && pages.length === 3 && pages.every(receipt => receipt.state === "ready")
+        && pages.every(receipt => !["queued", "running"].includes(receipt.analysis?.state ?? "ready"))) { staged = state; break; }
+      await sleep(200);
+    }
+    assert.ok(staged, "three same-minute scans must merge into one staging group");
+    const [group] = staged.groups;
+    const ids = group.receipts.map(receipt => receipt.id);
+    await page.reload();
+    const row = page.locator(`.cell[data-group-id="${group.id}"]`);
+    await row.waitFor({ timeout: 15000 });
+    // Two slots of evidence, three pages: the row is short one crop, and that is exactly the page the
+    // old design lost.
+    assert.equal(await row.locator(".stamps .stamp-slot").count(), 2, "the row draws evidence for only two of the pages");
+    const picks = row.locator(".picks .pick");
+    assert.equal(await picks.count(), 3, "every page of the row keeps a selection control");
+    for (const [index, id] of ids.entries()) {
+      assert.equal(await picks.nth(index).getAttribute("aria-label"), `Select page ${id.slice(0, 8)}`);
+      assert.notEqual(await picks.nth(index).isDisabled(), true, `page ${id.slice(0, 8)} must stay selectable`);
+    }
+    // The rail holds all three boxes without pushing anything out of the row.
+    const bounds = await row.boundingBox();
+    for (const index of [0, 1, 2]) {
+      const box = await picks.nth(index).boundingBox();
+      assert.ok(box && box.x >= bounds.x && box.x + box.width <= bounds.x + bounds.width
+        && box.y >= bounds.y && box.y + box.height <= bounds.y + bounds.height,
+      `the checkbox for page ${ids[index].slice(0, 8)} is outside the row`);
+    }
+    // Tick the page that has no crop, and combine moves that page and nothing else.
+    await picks.nth(2).check();
+    assert.equal(await row.getAttribute("data-selected"), "true");
+    await page.getByRole("button", { name: /^Make selected pages a manual group/ }).click();
+    await page.waitForFunction(() => document.querySelector('[role="status"]').textContent.includes("Selected pages combined"), null, { timeout: 15000 });
+    const split = await (await page.request.get(`${origin}/api/state`)).json();
+    const [moved] = split.groups.filter(item => item.manual === 1);
+    assert.ok(moved && moved.receipts.length === 1 && moved.receipts[0].id === ids[2],
+      "the page with no crop in the row must be the one the selection moves");
+    assert.equal(split.groups.find(item => item.id === group.id).receipts.length, 2);
+  }, false, true);
+});
+
 test("a dense confident scan arrives legibility auto-checked, leaving one keystroke for the bottom", {
   timeout: 180000, skip: spawnSync("tesseract", ["--version"]).status !== 0,
 }, async () => {
