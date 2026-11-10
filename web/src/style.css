@@ -94,9 +94,16 @@ dialog.inspection::backdrop{background:transparent}
 .render-toggle button[aria-pressed="true"]{background:#175d50;color:white}
 .inspection-modal .render-toggle{margin-left:auto}
 /* The control rides above the page in its own row, centred on it: nothing else shares that row,
-   so switching the rendering can never nudge the buttons sideways. */
+   so switching the rendering can never nudge the buttons sideways. The page-recipe switch sits in a
+   row of its own beneath it, and is there whatever else changes, so a page ruling moves nothing. */
 .scan-pane{display:flex;flex-direction:column;align-items:center;gap:8px}
 .scan-pane .thumbnail{margin-top:0}
+/* Only the black-and-white recipes are offered here, because only those can become an archived page.
+   The labels match the ranked stamp list above so the same words mean the same processing. */
+.page-recipe{display:inline-flex;flex-wrap:wrap;justify-content:center;align-items:center;border:1px solid #c8d4da;border-radius:8px;overflow:hidden;flex:0 0 auto}
+.page-recipe span{padding:7px 10px;color:#5b6b74;font-size:11px;letter-spacing:.05em;text-transform:uppercase}
+.page-recipe button{border:0;border-left:1px solid #c8d4da;border-radius:0;padding:7px 12px}
+.page-recipe button[aria-pressed="true"]{background:#175d50;color:white}
 .inspection-modal .strip{overflow:auto;background:#e8edef;margin:12px 0;flex:1;min-height:0}
 .strip img{display:block;max-width:none}
 dialog.editor{width:min(1000px,94vw);max-height:88dvh;margin:auto;padding:0;border:1px solid #d4dfe4;border-radius:14px;background:white;box-shadow:0 12px 44px #142a3540;overflow:hidden}

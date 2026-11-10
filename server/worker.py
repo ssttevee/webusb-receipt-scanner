@@ -300,7 +300,7 @@ def finalize_export(store, identity):
             durable_write(target, source.read_bytes())
             masters.append({"receipt_id": receipt["id"], "path": str(target), "sha256": expected})
             page = directory / f"{receipt['id']}-enhanced.tif"
-            durable_write(page, enhanced_page(source, recipe=receipt.get("binarization") or "sauvola"))
+            durable_write(page, enhanced_page(source, recipe=receipt.get("page_recipe") or "sauvola"))
             enhanced.append({"receipt_id": receipt["id"], "path": str(page), "sha256": digest(page)})
             pages.append(str(page))
         pdf = img2pdf.convert(pages)

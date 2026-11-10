@@ -22,10 +22,10 @@ from PIL import Image
 
 from .drive import Drive
 from .analysis_jobs import current_run, ensure_run, processing_active, queue_analysis, read_evidence, run_info
-from .binarize import apply_recipe, png as recipe_png
+from .binarize import PAGE_RECIPES, apply_recipe, png as recipe_png
 from .enhance import enhanced_array, trimmed_gray
 from .extraction import dates, times
-from .models import AnalysisRequest, Approval, Attest, Binarization, Capture, ConfirmProposed, Edit, Membership, Recrop, Stamp, Version
+from .models import AnalysisRequest, Approval, Attest, Binarization, Capture, ConfirmProposed, Edit, Membership, PageRecipe, Recrop, Stamp, Version
 from .storage import Settings, Store, digest, durable_write, encode, ensure_directory, sync_directory
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -230,10 +230,10 @@ def create_app(settings=None, drive=None):
         if render not in ("raw", "final"):
             fail("Render the raw scan or the final export page", 422)
         if render == "final":
-            # The page exactly as the approved PDF will export it - same trim, same honoured
-            # recipe the export job reaches for - so the operator can compare what the scanner
-            # printed against what the archive will hold. Nothing here is written anywhere.
-            pixels = enhanced_array(trimmed_gray(receipt["master"]), receipt["binarization"] or "sauvola")
+            # The page exactly as the approved PDF will export it - same trim, same page recipe the
+            # export job reaches for - so the operator can compare what the scanner printed against
+            # what the archive will hold. Nothing here is written anywhere.
+            pixels = enhanced_array(trimmed_gray(receipt["master"]), receipt["page_recipe"] or "sauvola")
             page = Image.fromarray(pixels, mode="L")
             if top is None:
                 page.thumbnail((800, 1600))
@@ -364,7 +364,8 @@ def create_app(settings=None, drive=None):
         # The operator's choice of stamp processing for this page. Like every ruling it is final in
         # both directions - it can override the machine's winner and hand the choice back (default)
         # - and like every preview it decides nothing about timestamps: it only records the choice,
-        # which the preview strips and the approved export then honour.
+        # which the stamp crops and the reading previews then honour. The page in the approved PDF is
+        # ruled separately, by page-recipe below.
         with store.transaction() as connection:
             receipt = receipt_row(connection, identity)
             group = group_for_edit(connection, receipt["group_id"], change.version)
@@ -381,6 +382,25 @@ def create_app(settings=None, drive=None):
             store.changed(connection, group["id"])
             version = store.group(connection, group["id"])["version"]
         return {"saved": True, "variant": None if change.variant == "default" else change.variant, "version": version}
+
+    # The page is ruled apart from how its stamp was read. Two of the four ranked recipes exist only to
+    # help the OCR see ink, and an archived page is a 1-bit Group 4 fax page, so this control offers -
+    # and this endpoint accepts - only the recipes that can become one. Unlike the reading choice it
+    # needs no ranking: the recipes are fixed, so a page whose reading pass failed still gets a page.
+    @app.post("/api/receipts/{identity}/page-recipe")
+    def choose_page_recipe(identity: str, change: PageRecipe):
+        with store.transaction() as connection:
+            receipt = receipt_row(connection, identity)
+            group = group_for_edit(connection, receipt["group_id"], change.version)
+            if receipt["state"] != "ready":
+                fail("Wait for image processing before reviewing")
+            if change.recipe != "default" and change.recipe not in PAGE_RECIPES:
+                fail(f"{change.recipe} renders a stamp for reading, not a page: archived pages stay black-and-white", 422)
+            connection.execute("UPDATE receipts SET page_recipe=? WHERE id=?",
+                               (None if change.recipe == "default" else change.recipe, identity))
+            store.changed(connection, group["id"])
+            version = store.group(connection, group["id"])["version"]
+        return {"saved": True, "recipe": None if change.recipe == "default" else change.recipe, "version": version}
 
     # ...and the candidates as text, so a Review row can show what each pass printed and start its
     # form from the half the OCR did read. Cheap: one stored JSON document already in the row.

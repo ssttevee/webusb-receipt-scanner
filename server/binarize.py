@@ -66,6 +66,13 @@ RECIPES = {
 }
 
 
+# Only these can become an archived page. An approval PDF's pages are written as 1-bit Group 4
+# (CCITT fax) TIFFs, which exists only for bilevel images, so the two grayscale recipes are reading
+# aids for the stamp region and never a page rendering. enhance.py and the operator's page control
+# both read this list, so a preview cannot offer a page the export would refuse to make.
+PAGE_RECIPES = ("sauvola", "otsu")
+
+
 def apply_recipe(key, gray):
     recipe = RECIPES[key]
     return np.asarray(recipe["apply"](gray, **recipe["parameters"]), dtype=np.uint8)

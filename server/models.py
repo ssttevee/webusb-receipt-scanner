@@ -112,6 +112,15 @@ class Binarization(Model):
     version: int
 
 
+class PageRecipe(Model):
+    # Which black-and-white recipe renders this page in the approved PDF, kept apart from the stamp
+    # reading choice above: that ranking offers grayscale recipes too, and only binarize.PAGE_RECIPES
+    # can become a page. The endpoint checks the value against that list, so adding a recipe there
+    # needs no second edit here. "default" hands the page back to the archive's own recipe.
+    recipe: str = Field(min_length=1, max_length=32)
+    version: int
+
+
 class ConfirmProposed(Model):
     groups: dict[str, int] = Field(min_length=1, max_length=100)
     receipt_ids: list[str] = Field(min_length=1, max_length=500)

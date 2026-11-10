@@ -16,6 +16,7 @@ type Diagnostic = { id: string; blob: Blob; metadata: unknown };
 type Receipt = { id: string; group_id: string; date: string | null; time: string | null; state: string;
   complete: number; readable: number; complete_source: string | null; readable_source: string | null;
   vendor: string | null; error: string | null; languages: string[]; binarization: string | null;
+  page_recipe: string | null;
   field_source: "manual" | "ocr" | "unresolved" | "confirmed"; timestamp_review: number; analysis?: AnalysisRun | null };
 type AnalysisRun = { id: string; version: number; mode: string; state: string; error: string | null; has_evidence: boolean;
   policy: { requested: { date_order: string | null; century: string | number | null; expected_month?: string | null };
@@ -191,7 +192,22 @@ function RenderToggle({ render, setRender }: { render: RenderMode; setRender: (v
     <button aria-pressed={render === "raw"} class={render === "raw" ? "" : "secondary"} onClick={() => setRender("raw")}
       title="The lossless scan exactly as captured">Raw scan</button>
     <button aria-pressed={render === "final"} class={render === "final" ? "" : "secondary"} onClick={() => setRender("final")}
-      title="The page as the approved PDF exports it: blank-feed and dark-edge trim, then the stamp processing the export honours for whole pages, since pages stay black-and-white">Final binarized</button>
+      title="The page as the approved PDF exports it: blank-feed and dark-edge trim, then the black-and-white recipe chosen on the switch just below this one">Final binarized</button>
+  </span>;
+}
+
+// Which recipe renders the archived page is ruled apart from how the stamp was read: the reading
+// ranking offers four recipes because two of them exist only to help the OCR see ink, while an
+// archived page is a black-and-white fax page. This switch offers exactly the recipes the server will
+// accept for a page (binarize.PAGE_RECIPES), so it can never promise a page the export won't make.
+const PAGE_RENDERING: [string, string][] = [["sauvola", "Local (Sauvola)"], ["otsu", "Global threshold"]];
+
+function PageRecipeToggle({ recipe, choose, disabled }: { recipe: string; choose: (value: string) => void; disabled: boolean }) {
+  return <span class="page-recipe" role="group" aria-label="Black-and-white recipe for the archived page">
+    <span class="page-recipe-name">Page</span>
+    {PAGE_RENDERING.map(([key, label]) => <button key={key} type="button" disabled={disabled}
+      aria-pressed={recipe === key} class={recipe === key ? "" : "secondary"} onClick={() => choose(key)}
+      title={`Archive this page through ${label} thresholding${key === "sauvola" ? ", the archive's default" : ""}`}>{label}</button>)}
   </span>;
 }
 
@@ -245,9 +261,10 @@ function ReceiptEditor({ receipt, group, refresh, select, report, onDirty }: {
     try { setRecrop(await api<{ lines: RecropLine[] }>(`/api/receipts/${receipt.id}/recrop`, { box: stampBox, expand })); }
     catch (error) { report(String(error)); } finally { setRecropBusy(false); }
   }
-  // Choosing a processing recipe is a ruling about how the stamp is rendered, not what it says:
-  // it writes one column and re-renders previews and the export page. It can override the
-  // machine's winner or hand the choice back, and either way the timestamp fields stay put.
+  // Choosing a processing recipe is a ruling about how the stamp is rendered for reading, not what it
+  // says: it writes one column, re-renders the stamp crops, and can override the machine's winner or
+  // hand the choice back. Either way the timestamp fields stay put, and the archived page is untouched:
+  // that is ruled by the page recipe below, which only accepts black-and-white recipes.
   const variantInUse = receipt.binarization ?? ranking?.selected ?? null;
   async function chooseVariant(variant: string) {
     setVariantBusy(true);
@@ -256,6 +273,18 @@ function ReceiptEditor({ receipt, group, refresh, select, report, onDirty }: {
       setBaseVersion(saved.version);
       await refresh();
     } catch (error) { report(String(error)); } finally { setVariantBusy(false); }
+  }
+  const [pageBusy, setPageBusy] = useState(false);
+  // Which black-and-white recipe renders this page in the approved PDF, ruled on its own. The page
+  // preview below carries the value in its address, so the browser cannot keep showing the old page.
+  const pageRendering = receipt.page_recipe ?? "sauvola";
+  async function choosePage(recipe: string) {
+    setPageBusy(true);
+    try {
+      const saved = await api<{ version: number }>(`/api/receipts/${receipt.id}/page-recipe`, { recipe, version: baseVersion });
+      setBaseVersion(saved.version);
+      await refresh();
+    } catch (error) { report(String(error)); } finally { setPageBusy(false); }
   }
   useEffect(() => {
     if (receipt.state !== "ready") return;
@@ -287,7 +316,8 @@ function ReceiptEditor({ receipt, group, refresh, select, report, onDirty }: {
     {receipt.state !== "ready" && <p class="page-state"><span class="badge">{receipt.state.replaceAll("_", " ")}</span>
       <span class="muted">Page <code>{receipt.id.slice(0, 8)}</code> — fields unlock once this page is ready.</span></p>}
     {receipt.state === "ready" && <div class="scan-pane"><RenderToggle render={render} setRender={setRender} />
-      <img class="thumbnail" src={`/api/receipts/${receipt.id}/image${render === "final" ? "?render=final" : ""}`}
+      <PageRecipeToggle recipe={pageRendering} choose={choosePage} disabled={!editable || stale || pageBusy} />
+      <img class="thumbnail" src={`/api/receipts/${receipt.id}/image${render === "final" ? `?render=final&page=${pageRendering}` : ""}`}
         alt={`Receipt ${receipt.id.slice(0, 8)} ${render === "final" ? "approved export page" : "raw scan"} preview`} loading="lazy" onClick={inspect} /></div>}
     {extraction && <section class="proposal"><strong>{extraction.selected ? "OCR timestamp proposal — confirm against the scan" : "Timestamp needs manual review"}</strong>
       {extraction.routing?.selected_engine === "rapidocr" && <p>RapidOCR fallback supplied this proposal. Inspect both engine source lists.</p>}
@@ -327,9 +357,8 @@ function ReceiptEditor({ receipt, group, refresh, select, report, onDirty }: {
       {ranking && <details class="variants" open>
         <summary>Stamp processing ({ranking.results.length} recipes measured)</summary>
         <p class="muted">The page pass re-read this page's printed stamp region through each recipe and ranked what it
-          read. Choosing one changes how the stamp renders for reading, and in the approved export whenever it is a
-          black-and-white recipe; a grayscale pick never reaches the export, whose pages stay black-and-white. It
-          never changes the timestamp by itself.</p>
+          read. Choosing one changes how the stamp renders for reading and never changes the timestamp by itself.
+          What renders the page in the approved PDF is ruled separately, on the Page switch above the page image.</p>
         <ul class="variant-list">{ranking.results.map(item => <li key={item.key}>
           <img src={`/api/receipts/${receipt.id}/stamp-variant?variant=${item.key}`}
             alt={`${item.label} rendering of the stamp region`} />
@@ -402,7 +431,7 @@ function ReceiptEditor({ receipt, group, refresh, select, report, onDirty }: {
           <button disabled={row + 512 >= height} onClick={() => setRow(row + 512)}>Next strip</button>
           <button onClick={() => setRow(Math.max(0, height - 512))}>Physical bottom</button>
           <RenderToggle render={render} setRender={setRender} /></div>
-        <div class="strip"><img src={`/api/receipts/${receipt.id}/image?top=${row}${render === "final" ? "&render=final" : ""}`}
+        <div class="strip"><img src={`/api/receipts/${receipt.id}/image?top=${row}${render === "final" ? `&render=final&page=${pageRendering}` : ""}`}
           alt={`Full-resolution ${render === "final" ? "binarized export" : "raw scan"} rows ${row}–${Math.min(row + 512, height)}`} /></div>
         <details><summary>Unvalidated local OCR evidence</summary><pre>{JSON.stringify(evidence, null, 2)}</pre></details>
       </section>

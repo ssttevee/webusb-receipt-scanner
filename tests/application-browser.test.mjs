@@ -954,6 +954,132 @@ test("the details dialog ranks stamp processing and lets the operator choose it"
   }, false, true);
 });
 
+// Two rulings, two controls. The reading list ranks four recipes because two of them exist only to help
+// the OCR see ink, while an archived page is a black-and-white fax page - so the page switch offers only
+// the recipes that can become one, and a reading recipe can never redraw it. The fixture is paper lit
+// unevenly across its width, which is the case where the two black-and-white recipes archive genuinely
+// different pages: a page ruling that changed nothing would be visible here.
+test("the archived page is ruled on its own switch, and a reading recipe can never become it", {
+  timeout: 180000, skip: spawnSync("tesseract", ["--version"]).status !== 0,
+}, async () => {
+  await environment(async ({ page, origin }) => {
+    const png = await page.evaluate(() => {
+      const canvas = document.createElement("canvas"); canvas.width = 640; canvas.height = 1200;
+      const context = canvas.getContext("2d");
+      context.fillStyle = "rgb(245,245,245)"; context.fillRect(0, 0, 320, 1200);
+      context.fillStyle = "rgb(105,105,105)"; context.fillRect(320, 0, 320, 1200);
+      context.fillStyle = "rgb(40,40,40)";
+      for (let left = 20; left < 620; left += 60) context.fillRect(left, 400, 20, 300);
+      context.font = "32px sans-serif";
+      context.fillText("Transaction", 20, 90); context.fillText("2026-09-14 17:21:30", 12, 150);
+      context.fillText("THANK YOU", 20, 1150);
+      return canvas.toDataURL("image/png").split(",")[1];
+    });
+    await page.locator('input[type="file"]').setInputFiles({ name: "uneven.png", mimeType: "image/png", buffer: Buffer.from(png, "base64") });
+    await page.waitForFunction(() => document.querySelector(".cell .stamp-date")?.value === "2026-09-14", null, { timeout: 90000 });
+    await openEditor(page);
+    await page.waitForFunction(() => document.querySelectorAll(".variant-list li").length === 4
+      && [...document.querySelectorAll(".variant-list img")].every(image => image.complete && image.naturalWidth > 0), null, { timeout: 30000 });
+    const ranked = await page.evaluate(() => [...document.querySelectorAll(".variant-list li")].map(li => ({
+      key: new URL(li.querySelector("img").src).searchParams.get("variant"),
+      label: li.querySelector("strong").textContent.trim(),
+    })));
+    const ink = () => page.evaluate(() => {  // the page the preview is showing, counted
+      const image = document.querySelector(".receipt .thumbnail");
+      const canvas = document.createElement("canvas");
+      canvas.width = image.naturalWidth; canvas.height = image.naturalHeight;
+      const context = canvas.getContext("2d"); context.drawImage(image, 0, 0);
+      const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+      let dark = 0;
+      for (let index = 0; index < pixels.length; index += 4) if (pixels[index] < 128) dark += 1;
+      return { dark, total: canvas.width * canvas.height };
+    });
+
+    const pageSwitch = page.locator(".scan-pane .page-recipe");
+    const toggle = page.locator(".scan-pane .render-toggle");
+    const offered = await page.evaluate(() => [...document.querySelectorAll(".scan-pane .page-recipe button")]
+      .map(button => ({ label: button.textContent.trim(), pressed: button.getAttribute("aria-pressed") })));
+    assert.deepEqual(offered.map(item => item.label), ["Local (Sauvola)", "Global threshold"],
+      "the page switch offers the black-and-white recipes, by the same names the reading list uses");
+    const labels = new Set(offered.map(item => item.label));
+    for (const row of ranked) {
+      const canBePage = ["sauvola", "otsu"].includes(row.key);
+      assert.equal(labels.has(row.label), canBePage,
+        `${row.label} (${row.key}) ${canBePage ? "must be" : "must never be"} offered as a page rendering`);
+    }
+    assert.equal(offered.filter(item => item.pressed === "true").length, 1, "exactly one page recipe is in use");
+    assert.equal(offered[0].pressed, "true", "the archive's own recipe is in use before the operator says otherwise");
+    assert((await pageSwitch.evaluate(node => node.textContent.replace(/\s+/g, " ").trim())).length < 60,
+      "the page switch names its choices and carries no description of its own");
+    const resting = { page: await pageSwitch.boundingBox(), toggle: await toggle.boundingBox() };
+    assert(await page.evaluate(() => {
+      const paper = document.querySelector(".receipt .thumbnail").getBoundingClientRect();
+      const centred = box => Math.abs(box.left + box.width / 2 - (paper.left + paper.width / 2)) < 2;
+      const switchBox = document.querySelector(".scan-pane .render-toggle").getBoundingClientRect();
+      const pageBox = document.querySelector(".scan-pane .page-recipe").getBoundingClientRect();
+      return centred(switchBox) && centred(pageBox) && switchBox.bottom <= paper.top
+        && pageBox.bottom <= paper.top && pageBox.top >= switchBox.bottom - 1;
+    }), "both switches must ride centred above the page, one under the other");
+
+    await toggle.getByRole("button", { name: "Final binarized", exact: true }).click();
+    await page.waitForFunction(() => { const image = document.querySelector(".receipt .thumbnail");
+      return image.complete && image.src.includes("render=final") && image.naturalWidth > 0; });
+    const archive = await ink();
+    assert(archive.dark > 1000 && archive.dark < archive.total * 0.3,
+      `the archive's own recipe must ink the printed bars without inking the shadow: ${archive.dark} of ${archive.total}`);
+
+    // Ruling the page on the other black-and-white recipe re-renders the preview it promises to archive.
+    await pageSwitch.getByRole("button", { name: "Global threshold", exact: true }).click();
+    await page.waitForFunction(() => { const image = document.querySelector(".receipt .thumbnail");
+      return image.complete && image.src.includes("render=final")
+        && new URL(image.src).searchParams.get("page") === "otsu" && image.naturalWidth > 0; }, null, { timeout: 30000 });
+    const ruled = await ink();
+    assert(ruled.dark > archive.dark + archive.total * 0.1,
+      `the page ruling must reach the archived page: ${archive.dark} ink pixels, then ${ruled.dark}`);
+    assert.equal(await pageSwitch.getByRole("button", { name: "Local (Sauvola)", exact: true }).getAttribute("aria-pressed"), "false");
+    assert.equal(await pageSwitch.getByRole("button", { name: "Global threshold", exact: true }).getAttribute("aria-pressed"), "true");
+    // Neither switch moves for the other's ruling, or for its own.
+    for (const [name, box] of Object.entries({ "page switch": await pageSwitch.boundingBox(), "raw/final switch": await toggle.boundingBox() })) {
+      const before = name === "page switch" ? resting.page : resting.toggle;
+      assert(Math.abs(box.x - before.x) < 0.5 && Math.abs(box.y - before.y) < 0.5 && Math.abs(box.width - before.width) < 0.5,
+        `ruling the page moved the ${name}`);
+    }
+    assert.equal(await toggle.getByRole("button", { name: "Final binarized", exact: true }).getAttribute("aria-pressed"), "true",
+      "the page ruling cannot undo which rendering is being shown");
+
+    // A reading pick of either kind, including one that cannot be a page, leaves the ruled page alone.
+    const readingAid = ranked.findIndex(row => row.key === "reference");
+    await page.locator(".variant-list li").nth(readingAid).getByRole("button", { name: "Use this" }).click();
+    await page.waitForFunction(index => {
+      const li = [...document.querySelectorAll(".variant-list li")][index];
+      return li && li.textContent.includes("in use");
+    }, readingAid, { timeout: 30000 });
+    assert.equal(await page.evaluate(() => document.querySelectorAll(".variant-list li").length), 4,
+      "ruling the page must not re-rank or shrink the reading recipes");
+    assert.equal((await ink()).dark, ruled.dark, "a reading recipe must never redraw the archived page");
+    assert.match(await page.locator(".receipt .thumbnail").getAttribute("src"), /page=otsu/);
+    assert.equal(await pageSwitch.getByRole("button", { name: "Global threshold", exact: true }).getAttribute("aria-pressed"), "true",
+      "the reading ruling must leave the page's own choice in use");
+    assert.equal(await page.evaluate(() => [...document.querySelectorAll(".variant-list li")]
+      .findIndex(li => li.textContent.includes("in use"))), readingAid, "the reading list marks the reading choice in use, not the page choice");
+    const saved = await (await page.request.get(`${origin}/api/state`)).json();
+    assert.deepEqual([saved.groups[0].receipts[0].binarization, saved.groups[0].receipts[0].page_recipe], ["reference", "otsu"],
+      "the two rulings are stored apart, and each stays where it was put");
+
+    // Handing the page to the other recipe reaches the same page the archive would have made by itself,
+    // and the full-resolution strips honour the one ruling too.
+    await pageSwitch.getByRole("button", { name: "Local (Sauvola)", exact: true }).click();
+    await page.waitForFunction(() => { const image = document.querySelector(".receipt .thumbnail");
+      return image.complete && new URL(image.src).searchParams.get("page") === "sauvola"; }, null, { timeout: 30000 });
+    assert.equal((await ink()).dark, archive.dark, "the switch's other choice must produce the archive's own page exactly");
+    await page.getByRole("button", { name: "Inspect full-resolution strips & OCR" }).click();
+    await page.locator(".inspection-modal").getByRole("button", { name: "Final binarized", exact: true }).click();
+    await page.waitForFunction(() => { const image = document.querySelector(".strip img");
+      return image && image.complete && image.src.includes("render=final")
+        && new URL(image.src).searchParams.get("page") === "sauvola"; }, null, { timeout: 15000 });
+  }, false, true);
+});
+
 test("a row whose scan never resolved a timestamp can be ruled from the row itself", {
   timeout: 120000, skip: spawnSync("tesseract", ["--version"]).status !== 0,
 }, async () => {

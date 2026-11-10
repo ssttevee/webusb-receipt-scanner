@@ -70,13 +70,14 @@ def trimmed_gray(source):
 
 
 def enhanced_array(gray, recipe="sauvola"):
-    """The trimmed page through the recipe the export honours. Only recipes that produce a
-    black-and-white image count: the operator's choice was judged on one small printed region,
-    and the approval PDF's pages must stay bilevel - grayscale-oriented recipes (reference,
-    stretched) therefore keep the established default. Export and preview share this call so a
+    """The trimmed page through the recipe the operator chose for this page. Only recipes that
+    produce a black-and-white image can be chosen (binarize.PAGE_RECIPES): the operator's stamp
+    ranking is judged on one small printed region and offers two grayscale readings as reading aids,
+    and the approval PDF's pages must stay bilevel, so the request layer refuses those readings as a
+    page and this fallback stays behind it as the last line. Export and preview share this call so a
     preview can never promise a page the approved PDF won't make."""
-    from .binarize import apply_recipe
-    return apply_recipe(recipe if recipe in ("sauvola", "otsu") else "sauvola", gray)
+    from .binarize import PAGE_RECIPES, apply_recipe
+    return apply_recipe(recipe if recipe in PAGE_RECIPES else "sauvola", gray)
 
 
 def enhanced_page(source, dpi=None, recipe="sauvola"):

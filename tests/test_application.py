@@ -44,6 +44,31 @@ def capture(client, store, identity=None, complete=True, process=True, **metadat
     return manifest, data
 
 
+def capture_uneven_lighting(client, store):
+    # A wider scan of paper lit unevenly across its width: a bright half and a shadowed half carry the
+    # same printed bars, so one global threshold inks the shadow while a local one does not. The two
+    # black-and-white recipes therefore make genuinely different archived pages (4,320 ink pixels
+    # against 16,640 here), which is what an operator's page ruling has to be able to choose between -
+    # the striped capture() fixture cannot show it, because both recipes render it identically.
+    def pixel(x):
+        if x == 199:
+            return 20                                    # dark background at the right edge, cut by the trim
+        if x in range(10, 15) or x in range(180, 185):
+            return 40                                    # printed ink in both halves
+        return 245 if x < 100 else 100                   # the uneven lighting itself
+    row = [pixel(x) for x in range(200)]
+    data = b"".join(bytes([value, value, value]) for value in row) * 160
+    manifest = {"id": str(uuid.uuid4()), "sha256": hashlib.sha256(data).hexdigest(), "byte_length": len(data),
+        "kind": "scanner-raw", "width": 200, "height": 160, "dpi_x": 200, "dpi_y": 200, "transport_complete": True,
+        "frame": {"format": 1, "depth": 8, "bytes_per_line": 600, "pixels_per_line": 200, "lines": 160, "last_frame": True}}
+    assert client.post("/api/captures", json=manifest).status_code == 200
+    assert client.put(f"/api/captures/{manifest['id']}/chunks/0", content=data,
+                      headers={**HEADERS, "Content-Type": "application/octet-stream"}).status_code == 200
+    assert client.post(f"/api/captures/{manifest['id']}/finalize").json()["durable"] is True
+    assert run_one(store)
+    return manifest, data
+
+
 def state(client):
     response = client.get("/api/state")
     assert response.status_code == 200
@@ -67,7 +92,7 @@ def test_origin_boundary_and_incomplete_rejection(runtime):
     assert client.post("/api/captures", json={}, headers={"Origin": "https://outside.example"}).status_code == 403
     assert client.get("/api/health", headers={"Host": "outside.example"}).status_code == 403
     # Health reports the database's own ladder value, so the two can never disagree.
-    assert client.get("/api/health").json()["schema"] == 5
+    assert client.get("/api/health").json()["schema"] == 6
     assert client.get("/").headers["Cross-Origin-Embedder-Policy"] == "require-corp"
     oversized = client.post("/api/captures", content=b"x" * (1048576 + 1))
     assert oversized.status_code == 413
@@ -735,8 +760,8 @@ def test_schema_one_migration_preserves_manual_timestamps(tmp_path):
     connection.close()
     store = Store(settings)
     with store.transaction() as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
-        assert "binarization" in [row[1] for row in connection.execute("PRAGMA table_info(receipts)")]
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 6
+        assert {"binarization", "page_recipe"} <= {row[1] for row in connection.execute("PRAGMA table_info(receipts)")}
         manual = dict(connection.execute("SELECT * FROM receipts WHERE id='manual'").fetchone())
         assert manual["date"] == "2021-12-21" and manual["time"] == "12:45:42"
         assert manual["field_source"] == "manual" and manual["timestamp_review"] == 0
@@ -894,7 +919,7 @@ def test_image_render_toggle_previews_the_page_the_approved_export_will_make(run
     import numpy as np
     from server.enhance import enhanced_array, trimmed_gray
     client, store = runtime
-    manifest, _ = capture(client, store)
+    manifest, _ = capture_uneven_lighting(client, store)
     identity = manifest["id"]
     assert client.get(f"/api/receipts/{identity}/image?render=bogus").status_code == 422
     raw = client.get(f"/api/receipts/{identity}/image?top=0")
@@ -907,12 +932,21 @@ def test_image_render_toggle_previews_the_page_the_approved_export_will_make(run
     pixels = np.asarray(Image.open(io.BytesIO(final.content)).convert("L"))
     assert np.array_equal(pixels, expected[:pixels.shape[0]])  # the strip is the export page's top rows
     assert set(np.unique(pixels)) <= {0, 255}  # bilevel, like every approval PDF page
+    # The page render follows the page ruling, not the stamp reading: choosing a bilevel recipe to read
+    # the stamp with leaves the archived page exactly where it was.
     seed_ranking(store, identity)
     group = next(g for g in state(client)["groups"] if any(r["id"] == identity for r in g["receipts"]))
     assert client.post(f"/api/receipts/{identity}/binarization", json={"variant": "otsu", "version": group["version"]}).status_code == 200
+    reading_pick = client.get(f"/api/receipts/{identity}/image?top=0&render=final")
+    pixels = np.asarray(Image.open(io.BytesIO(reading_pick.content)).convert("L"))
+    assert np.array_equal(pixels, expected[:pixels.shape[0]])  # the reading choice never reaches the page
+    # The page's own ruling does, and the preview shows the page it produced.
+    group = next(g for g in state(client)["groups"] if any(r["id"] == identity for r in g["receipts"]))
+    assert client.post(f"/api/receipts/{identity}/page-recipe", json={"recipe": "otsu", "version": group["version"]}).status_code == 200
     chosen = client.get(f"/api/receipts/{identity}/image?top=0&render=final")
     pixels = np.asarray(Image.open(io.BytesIO(chosen.content)).convert("L"))
     assert np.array_equal(pixels, enhanced_array(trimmed_gray(master), "otsu")[:pixels.shape[0]])  # honours the operator
+    assert not np.array_equal(pixels, expected[:pixels.shape[0]])  # and this fixture really does differ
     full = client.get(f"/api/receipts/{identity}/image?render=final")  # the details screen's whole page
     assert full.status_code == 200 and full.content[:4] == b"\x89PNG"
     page = Image.fromarray(enhanced_array(trimmed_gray(master), "otsu"), mode="L")
@@ -921,17 +955,17 @@ def test_image_render_toggle_previews_the_page_the_approved_export_will_make(run
     assert np.asarray(fitted.convert("L")).shape == page.size[::-1]
     assert set(np.unique(np.asarray(fitted.convert("L")))) <= {0, 255}  # the page preview stays bilevel too
     assert client.get(f"/api/receipts/{identity}/image?top=99999&render=final").status_code == 200  # past the trim: clamps, never breaks
-    # A reading pick that is grayscale stays a reading pick: the export's pages must stay black-and-white,
-    # so the page render keeps the established default rather than promising a page that can't be archived.
+    # A grayscale reading pick is a reading aid and nothing more: the page stays under its own ruling,
+    # because nothing in this pipeline redraws a page at a threshold nobody chose.
     from server.binarize import apply_recipe
     gray_page = apply_recipe("reference", trimmed_gray(master))
-    assert not np.array_equal(gray_page, enhanced_array(trimmed_gray(master)))  # the two really differ here
+    assert not np.array_equal(gray_page, enhanced_array(trimmed_gray(master), "otsu"))  # the two really differ here
     seed_ranking(store, identity, ("sauvola", "otsu", "reference"))
     group = next(g for g in state(client)["groups"] if any(r["id"] == identity for r in g["receipts"]))
     assert client.post(f"/api/receipts/{identity}/binarization", json={"variant": "reference", "version": group["version"]}).status_code == 200
     grayscale_pick = client.get(f"/api/receipts/{identity}/image?top=0&render=final")
     pixels = np.asarray(Image.open(io.BytesIO(grayscale_pick.content)).convert("L"))
-    assert np.array_equal(pixels, enhanced_array(trimmed_gray(master))[:pixels.shape[0]])  # still the export's page
+    assert np.array_equal(pixels, enhanced_array(trimmed_gray(master), "otsu")[:pixels.shape[0]])  # still the ruled page
 
 
 def test_binarization_choice_stops_once_approval_starts(runtime):
@@ -948,3 +982,100 @@ def test_binarization_choice_stops_once_approval_starts(runtime):
     assert result.status_code != 200
     with store.transaction() as connection:
         assert connection.execute("SELECT binarization FROM receipts WHERE id=?", (identity,)).fetchone()[0] == "otsu"
+
+
+def test_the_archived_page_is_ruled_apart_from_how_the_stamp_was_read(runtime):
+    # Two of the four ranked recipes exist to help the OCR see ink, while an archived page is a 1-bit
+    # fax page. So the page carries a ruling of its own: a reading recipe that cannot become a page is
+    # refused with its reason rather than redrawn at a threshold nobody chose, the page ruling needs no
+    # reading ranking to exist, and the page the operator ruled on is the page the archive holds.
+    import numpy as np
+    from pathlib import Path
+    from server.enhance import enhanced_array, enhanced_page, trimmed_gray
+    client, store = runtime
+    manifest, _ = capture_uneven_lighting(client, store)
+    identity = manifest["id"]
+    with store.transaction() as connection:
+        master = connection.execute("SELECT master FROM receipts WHERE id=?", (identity,)).fetchone()[0]
+
+    def group_of():
+        return next(g for g in state(client)["groups"] if any(r["id"] == identity for r in g["receipts"]))
+
+    def page_pixels():
+        response = client.get(f"/api/receipts/{identity}/image?top=0&render=final")
+        assert response.status_code == 200
+        return np.asarray(Image.open(io.BytesIO(response.content)).convert("L"))
+
+    archive_default = enhanced_array(trimmed_gray(master))
+    assert client.get(f"/api/receipts/{identity}/stamp-variant?variant=otsu").status_code == 404  # nothing ranked on this page
+    assert np.array_equal(page_pixels(), archive_default[:page_pixels().shape[0]])  # no ruling yet: the archive's own recipe
+    for reading in ("reference", "stretched"):
+        result = client.post(f"/api/receipts/{identity}/page-recipe", json={"recipe": reading, "version": group_of()["version"]})
+        assert result.status_code == 422 and reading in result.text  # refused with the reason, never redrawn
+    assert client.post(f"/api/receipts/{identity}/page-recipe", json={"recipe": "bogus", "version": group_of()["version"]}).status_code == 422
+    assert client.post(f"/api/receipts/{identity}/page-recipe", json={"recipe": "otsu", "version": group_of()["version"] - 1}).status_code == 409
+    group = group_of()
+    assert client.post(f"/api/receipts/{identity}/page-recipe", json={"recipe": "otsu", "version": group["version"]}).json() == {
+        "saved": True, "recipe": "otsu", "version": group["version"] + 1}
+    group = group_of()
+    assert group["receipts"][0]["page_recipe"] == "otsu" and group["receipts"][0]["binarization"] is None
+    ruled_page = enhanced_array(trimmed_gray(master), "otsu")
+    pixels = page_pixels()
+    assert np.array_equal(pixels, ruled_page[:pixels.shape[0]]) and not np.array_equal(pixels, archive_default[:pixels.shape[0]])
+    # Neither ruling can overwrite the other: a reading pick of either kind leaves the ruled page alone.
+    seed_ranking(store, identity, ("sauvola", "otsu", "reference"))
+    assert client.post(f"/api/receipts/{identity}/binarization", json={"variant": "reference", "version": group_of()["version"]}).status_code == 200
+    pixels = page_pixels()
+    assert np.array_equal(pixels, ruled_page[:pixels.shape[0]])
+    with store.transaction() as connection:
+        assert tuple(connection.execute("SELECT binarization,page_recipe FROM receipts WHERE id=?", (identity,)).fetchone()) == ("reference", "otsu")
+    # A ruling is final in both directions: handing the page back returns it to the archive's recipe.
+    group = group_of()
+    assert client.post(f"/api/receipts/{identity}/page-recipe", json={"recipe": "default", "version": group["version"]}).json()["recipe"] is None
+    assert np.array_equal(page_pixels(), archive_default[:page_pixels().shape[0]])
+    with store.transaction() as connection:
+        assert connection.execute("SELECT page_recipe FROM receipts WHERE id=?", (identity,)).fetchone()[0] is None
+    # The page the preview showed is the page the PDF carries, byte for byte.
+    assert client.post(f"/api/receipts/{identity}/page-recipe", json={"recipe": "otsu", "version": group_of()["version"]}).status_code == 200
+    review(client, identity)
+    group = group_of()
+    export = prepared(client, group)
+    assert client.post(f"/api/groups/{group['id']}/approve", json={"export_id": export["id"], "version": group["version"]}).status_code == 202
+    assert run_one(store)
+    assert b"/CCITTFaxDecode" in client.get(f"/api/exports/{export['id']}/pdf").content
+    archived = json.loads((store.settings.archive / ".exports" / export["id"] / "manifest.json").read_text())
+    archived_page = Path(archived["enhanced"][0]["path"]).read_bytes()
+    assert archived_page == enhanced_page(master, recipe="otsu") != enhanced_page(master, recipe="sauvola")
+    with Image.open(archived["enhanced"][0]["path"]) as image:
+        assert image.mode == "1" and image.info["compression"] == "group4"  # a ruled page is still a fax page
+    assert client.post(f"/api/receipts/{identity}/page-recipe", json={"recipe": "sauvola", "version": group_of()["version"]}).status_code != 200
+    with store.transaction() as connection:
+        assert connection.execute("SELECT page_recipe FROM receipts WHERE id=?", (identity,)).fetchone()[0] == "otsu"
+
+
+def test_page_recipe_migration_carries_a_bilevel_reading_pick_onto_the_page(tmp_path):
+    # Whoever had chosen a black-and-white recipe for reading had that recipe render the approved page,
+    # so the migration hands exactly those picks across and no archived byte moves. The grayscale
+    # readings stay what they always were: reading aids with no page of their own.
+    import sqlite3
+    settings = Settings(tmp_path / "state", tmp_path / "work", tmp_path / "archive", ocr=False)
+    settings.state.mkdir()
+    connection = sqlite3.connect(settings.state / "receipts.sqlite3")
+    connection.executescript("""CREATE TABLE receipts(id TEXT PRIMARY KEY, group_id TEXT NOT NULL,
+       page_order INTEGER NOT NULL DEFAULT 1, state TEXT NOT NULL DEFAULT 'queued', date TEXT, time TEXT,
+       vendor TEXT, complete INTEGER NOT NULL DEFAULT 0, readable INTEGER NOT NULL DEFAULT 0,
+       languages TEXT NOT NULL DEFAULT '["eng"]', master TEXT, preview TEXT, evidence TEXT, error TEXT,
+       created REAL NOT NULL, field_source TEXT NOT NULL DEFAULT 'unresolved',
+       timestamp_review INTEGER NOT NULL DEFAULT 1, analysis_version INTEGER NOT NULL DEFAULT 0,
+       active_analysis TEXT, complete_source TEXT, readable_source TEXT, binarization TEXT);
+       INSERT INTO receipts(id,group_id,created,binarization) VALUES('bilevel','g',1,'otsu');
+       INSERT INTO receipts(id,group_id,created,binarization) VALUES('reading','g',1,'reference');
+       INSERT INTO receipts(id,group_id,created,binarization) VALUES('untouched','g',1,NULL);
+       PRAGMA user_version=5;""")
+    connection.close()
+    Store(settings)
+    connection = sqlite3.connect(settings.state / "receipts.sqlite3")
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == 6
+    assert {row[0]: row[1] for row in connection.execute("SELECT id,page_recipe FROM receipts")} == {
+        "bilevel": "otsu", "reading": None, "untouched": None}
+    connection.close()
