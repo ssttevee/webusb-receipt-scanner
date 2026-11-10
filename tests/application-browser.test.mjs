@@ -88,6 +88,11 @@ test("browser queue survives a lost acknowledgment and reload, then review/appro
     await page.waitForFunction(() => document.querySelector(".capture-panel").textContent.includes("0 browser copies pending"));
     await openEditor(page);
     await waitForReadyPage(page);
+    // The dialog frames its own scrolling area, so the lone page inside it must not draw a second
+    // frame 16px further in.
+    assert.deepEqual(await page.evaluate(() => { const style = getComputedStyle(document.querySelector("dialog.editor .receipt"));
+      return [style.borderTopWidth, style.borderBottomWidth, style.borderRadius, style.paddingLeft, style.paddingRight]; }),
+      ["0px", "0px", "0px", "0px", "0px"], "a single page in the dialog needs no card border of its own");
     assert.equal(await page.locator(".receipt").count(), 1);
     const intake = await (await page.request.get(`${origin}/api/state`)).json();
     const savedCapture = await (await page.request.get(`${origin}/api/receipts/${intake.groups[0].receipts[0].id}/evidence`)).json();
@@ -591,6 +596,9 @@ test("the ledger row carries one page-selection checkbox per page and the detail
     // Nothing here selects a page any more, and a ready page no longer needs a state line.
     assert.equal(await editor.locator(".pick, [aria-label^='Select page']").count(), 0);
     assert.equal(await editor.locator(".receipt").count(), 2, "both merged pages share this dialog");
+    // The card border stays exactly where it does work: two pages in one scroll area are told apart.
+    assert.deepEqual(await page.evaluate(() => [...document.querySelectorAll("dialog.editor .receipt")]
+      .map(card => getComputedStyle(card).borderTopWidth)), ["1px", "1px"]);
     for (const index of [0, 1]) assert.doesNotMatch(await editor.locator(".receipt").nth(index).textContent(), /Select page/);
     assert.equal(await editor.locator(".receipt .page-state").count(), 0);
     await closeEditor(page);

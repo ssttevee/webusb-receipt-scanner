@@ -46,6 +46,9 @@ input[type=file]::file-selector-button{font:inherit;font-weight:600;padding:6px 
 .pages>div:only-child>.receipt>*:not(.scan-pane){grid-column:2}
 }
 .receipt{border:1px solid #dfe6e9;border-radius:10px;padding:14px}
+/* The dialog already frames its scrolling area, so a lone page inside it needs no second box 16px
+   further in. The card border only earns its keep when two pages have to be told apart. */
+.pages>div:only-child>.receipt{border:0;border-radius:0;padding:0}
 /* Only pages that are still working carry a state line, so it needs no header row of its own. */
 .receipt .page-state{display:flex;align-items:center;gap:8px;margin:0 0 10px}
 .receipt .muted{font-size:.8rem}
