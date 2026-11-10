@@ -42,8 +42,9 @@ input[type=file]::file-selector-button{font:inherit;font-weight:600;padding:6px 
 @media(min-width:1100px){
 .pages>div:only-child>.receipt{display:grid;grid-template-columns:minmax(320px,44%) minmax(340px,1fr);column-gap:18px;align-items:start}
 .pages>div:only-child>.receipt>header{grid-column:1/-1}
-.pages>div:only-child>.receipt>.thumbnail{grid-column:1;grid-row:2/span 16;position:sticky;top:8px;height:auto;max-height:64vh}
-.pages>div:only-child>.receipt>*:not(header):not(.thumbnail){grid-column:2}
+.pages>div:only-child>.receipt>.scan-pane{grid-column:1;grid-row:2/span 16;position:sticky;top:8px}
+.pages>div:only-child>.receipt>.scan-pane .thumbnail{height:auto;max-height:64vh}
+.pages>div:only-child>.receipt>*:not(header):not(.scan-pane){grid-column:2}
 }
 .receipt{border:1px solid #dfe6e9;border-radius:10px;padding:14px}
 .receipt header{display:flex;align-items:center;justify-content:space-between;gap:10px}
@@ -84,13 +85,15 @@ dialog.inspection::backdrop{background:transparent}
 .inspection-modal{display:flex;flex-direction:column;background:white;border-radius:14px;width:min(1100px,100%);max-height:calc(100dvh - 36px);padding:16px 18px;overflow:hidden}
 .inspection-head{display:flex;align-items:center;justify-content:space-between;gap:14px}
 /* Raw scan vs final export page: one segmented control, never two competing page views. It sits
-   at the head of the details screen's control column and at the end of the inspection strip row. */
-.render-toggle{display:inline-flex;border:1px solid #c8d4da;border-radius:8px;overflow:hidden}
+   centred above the page on the details screen and at the end of the inspection strip row. */
+.render-toggle{display:inline-flex;border:1px solid #c8d4da;border-radius:8px;overflow:hidden;flex:0 0 auto}
 .render-toggle button{border:0;border-radius:0;padding:7px 12px}
 .render-toggle button[aria-pressed="true"]{background:#175d50;color:white}
 .inspection-modal .render-toggle{margin-left:auto}
-.scan-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:10px 0 0}
-.scan-head .muted{flex:1 1 180px;min-width:0}
+/* The control rides above the page in its own row, centred on it: nothing else shares that row,
+   so switching the rendering can never nudge the buttons sideways. */
+.scan-pane{display:flex;flex-direction:column;align-items:center;gap:8px}
+.scan-pane .thumbnail{margin-top:0}
 .inspection-modal .strip{overflow:auto;background:#e8edef;margin:12px 0;flex:1;min-height:0}
 .strip img{display:block;max-width:none}
 dialog.editor{width:min(1000px,94vw);max-height:88dvh;margin:auto;padding:0;border:1px solid #d4dfe4;border-radius:14px;background:white;box-shadow:0 12px 44px #142a3540;overflow:hidden}

@@ -92,20 +92,30 @@ test("browser queue survives a lost acknowledgment and reload, then review/appro
     await page.getByLabel("Selected image is readable").check();
     await page.getByRole("button", { name: "Save review", exact: true }).click();
     await page.waitForFunction(() => document.querySelector('[role="status"]').textContent.includes("Review saved"));
-    // The full page on the details screen carries the same raw/final choice as the inspection
-    // dialog: one rendering decision per page, so the two windows can never disagree.
+    // The full page on the details screen carries the same raw/final choice as the inspection dialog:
+    // one rendering decision per page, so the two windows can never disagree. The control rides above
+    // the page, centred on it, and switching the rendering must not move it an eyelash.
+    const control = page.locator(".scan-pane .render-toggle");
+    const resting = await control.boundingBox();
+    assert(await page.evaluate(() => {
+      const knob = document.querySelector(".scan-pane .render-toggle").getBoundingClientRect();
+      const paper = document.querySelector(".receipt .thumbnail").getBoundingClientRect();
+      return knob.width < paper.width - 8 && Math.abs(knob.left + knob.width / 2 - (paper.left + paper.width / 2)) < 2 && knob.bottom <= paper.top + 1;
+    }), "the raw/final control must be a compact control centred directly above the page it switches");
     const rawAspect = await page.evaluate(() => { const img = document.querySelector(".receipt .thumbnail");
       return img.naturalWidth / img.naturalHeight; });
     assert.match(await page.locator(".receipt .thumbnail").getAttribute("alt"), /raw scan preview/);
-    await page.locator(".scan-head").getByRole("button", { name: "Final binarized", exact: true }).click();
+    await control.getByRole("button", { name: "Final binarized", exact: true }).click();
     await page.waitForFunction(() => { const img = document.querySelector(".receipt .thumbnail");
       return img.complete && img.src.includes("render=final") && img.naturalWidth > 0; });
     assert.match(await page.locator(".receipt .thumbnail").getAttribute("alt"), /approved export page preview/);
-    assert.match(await page.locator(".scan-head").textContent(), /as the approved PDF will archive it/);
-    assert.equal(await page.locator(".scan-head").getByRole("button", { name: "Raw scan", exact: true }).getAttribute("aria-pressed"), "false");
+    assert.equal(await control.getByRole("button", { name: "Raw scan", exact: true }).getAttribute("aria-pressed"), "false");
+    const switched = await control.boundingBox();
+    assert(Math.abs(switched.x - resting.x) < 0.5 && Math.abs(switched.y - resting.y) < 0.5 && Math.abs(switched.width - resting.width) < 0.5,
+      "switching the rendering must leave the control exactly where it was");
     assert(Math.abs(await page.evaluate(() => { const img = document.querySelector(".receipt .thumbnail");
       return img.naturalWidth / img.naturalHeight; }) - rawAspect) < 0.02);  // same page, just rendered
-    await page.locator(".scan-head").getByRole("button", { name: "Raw scan", exact: true }).click();
+    await control.getByRole("button", { name: "Raw scan", exact: true }).click();
     await page.waitForFunction(() => { const img = document.querySelector(".receipt .thumbnail");
       return !img.src.includes("render=final") && img.complete && img.naturalWidth === 640; });
     await page.getByRole("button", { name: "Inspect full-resolution strips & OCR" }).click();

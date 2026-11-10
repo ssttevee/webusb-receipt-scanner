@@ -284,11 +284,9 @@ function ReceiptEditor({ receipt, group, refresh, selected, select, report, onDi
     <header class="row"><label><input type="checkbox" checked={selected} disabled={group.state !== "staging"}
       onChange={event => select(event.currentTarget.checked)} /> Select page <code>{receipt.id.slice(0, 8)}</code></label>
       <span class="badge">{receipt.state}</span></header>
-    {receipt.state === "ready" && <div class="scan-head"><RenderToggle render={render} setRender={setRender} />
-      <span class="muted">{render === "final" ? "The page as the approved PDF will archive it: trimmed, then the stamp processing the export honours for whole pages."
-        : "The scan exactly as captured."} Click the page for full-resolution strips.</span></div>}
-    {receipt.state === "ready" && <img class="thumbnail" src={`/api/receipts/${receipt.id}/image${render === "final" ? "?render=final" : ""}`}
-      alt={`Receipt ${receipt.id.slice(0, 8)} ${render === "final" ? "approved export page" : "raw scan"} preview`} loading="lazy" onClick={inspect} />}
+    {receipt.state === "ready" && <div class="scan-pane"><RenderToggle render={render} setRender={setRender} />
+      <img class="thumbnail" src={`/api/receipts/${receipt.id}/image${render === "final" ? "?render=final" : ""}`}
+        alt={`Receipt ${receipt.id.slice(0, 8)} ${render === "final" ? "approved export page" : "raw scan"} preview`} loading="lazy" onClick={inspect} /></div>}
     {extraction && <section class="proposal"><strong>{extraction.selected ? "OCR timestamp proposal — confirm against the scan" : "Timestamp needs manual review"}</strong>
       {extraction.routing?.selected_engine === "rapidocr" && <p>RapidOCR fallback supplied this proposal. Inspect both engine source lists.</p>}
       {extraction.routing?.primary_issues.length ? <p class="muted">Primary OCR: {extraction.routing.primary_issues.map(issue => issue.replaceAll("_", " ")).join(" · ")}</p> : null}
