@@ -191,7 +191,7 @@ function RenderToggle({ render, setRender }: { render: RenderMode; setRender: (v
     <button aria-pressed={render === "raw"} class={render === "raw" ? "" : "secondary"} onClick={() => setRender("raw")}
       title="The lossless scan exactly as captured">Raw scan</button>
     <button aria-pressed={render === "final"} class={render === "final" ? "" : "secondary"} onClick={() => setRender("final")}
-      title="The page as the approved PDF exports it: blank-feed and dark-edge trim, then this page's chosen stamp processing">Final binarized</button>
+      title="The page as the approved PDF exports it: blank-feed and dark-edge trim, then the stamp processing the export honours for whole pages, since pages stay black-and-white">Final binarized</button>
   </span>;
 }
 
@@ -285,7 +285,7 @@ function ReceiptEditor({ receipt, group, refresh, selected, select, report, onDi
       onChange={event => select(event.currentTarget.checked)} /> Select page <code>{receipt.id.slice(0, 8)}</code></label>
       <span class="badge">{receipt.state}</span></header>
     {receipt.state === "ready" && <div class="scan-head"><RenderToggle render={render} setRender={setRender} />
-      <span class="muted">{render === "final" ? "The page as the approved PDF will archive it: trimmed, then this page's chosen stamp processing."
+      <span class="muted">{render === "final" ? "The page as the approved PDF will archive it: trimmed, then the stamp processing the export honours for whole pages."
         : "The scan exactly as captured."} Click the page for full-resolution strips.</span></div>}
     {receipt.state === "ready" && <img class="thumbnail" src={`/api/receipts/${receipt.id}/image${render === "final" ? "?render=final" : ""}`}
       alt={`Receipt ${receipt.id.slice(0, 8)} ${render === "final" ? "approved export page" : "raw scan"} preview`} loading="lazy" onClick={inspect} />}
@@ -327,8 +327,9 @@ function ReceiptEditor({ receipt, group, refresh, selected, select, report, onDi
       {ranking && <details class="variants" open>
         <summary>Stamp processing ({ranking.results.length} recipes measured)</summary>
         <p class="muted">The page pass re-read this page's printed stamp region through each recipe and ranked what it
-          read. Choosing one changes how the stamp renders for reading and in the approved export; it never changes
-          the timestamp by itself.</p>
+          read. Choosing one changes how the stamp renders for reading, and in the approved export whenever it is a
+          black-and-white recipe; a grayscale pick never reaches the export, whose pages stay black-and-white. It
+          never changes the timestamp by itself.</p>
         <ul class="variant-list">{ranking.results.map(item => <li key={item.key}>
           <img src={`/api/receipts/${receipt.id}/stamp-variant?variant=${item.key}`}
             alt={`${item.label} rendering of the stamp region`} />

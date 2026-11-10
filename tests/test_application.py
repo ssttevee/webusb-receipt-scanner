@@ -856,13 +856,13 @@ def test_rank_binarization_scores_reads_under_the_pages_own_date_policy(tmp_path
         assert item["timestamp_read"]["date"] is None and item["timestamp_read"]["time"] == "19:05:13"
 
 
-def seed_ranking(store, identity):
+def seed_ranking(store, identity, keys=("sauvola", "otsu")):
     with store.transaction() as connection:
         evidence = json.loads(connection.execute("SELECT evidence FROM receipts WHERE id=?", (identity,)).fetchone()[0])
         evidence["binarization"] = {"version": "binarize-candidates-v1", "region": [0, 20, 20, 60], "selected": "sauvola",
                                     "results": [{"key": key, "label": key, "sha256": "0" * 64, "characters": 20, "confidence": 90.0,
                                                  "timestamp_read": {"date": "2026-09-14", "time": "17:21:30" if key == "sauvola" else None}}
-                                                for key in ("sauvola", "otsu")]}
+                                                for key in keys]}
         connection.execute("UPDATE receipts SET evidence=? WHERE id=?", (json.dumps(evidence), identity))
 
 
@@ -921,6 +921,17 @@ def test_image_render_toggle_previews_the_page_the_approved_export_will_make(run
     assert np.asarray(fitted.convert("L")).shape == page.size[::-1]
     assert set(np.unique(np.asarray(fitted.convert("L")))) <= {0, 255}  # the page preview stays bilevel too
     assert client.get(f"/api/receipts/{identity}/image?top=99999&render=final").status_code == 200  # past the trim: clamps, never breaks
+    # A reading pick that is grayscale stays a reading pick: the export's pages must stay black-and-white,
+    # so the page render keeps the established default rather than promising a page that can't be archived.
+    from server.binarize import apply_recipe
+    gray_page = apply_recipe("reference", trimmed_gray(master))
+    assert not np.array_equal(gray_page, enhanced_array(trimmed_gray(master)))  # the two really differ here
+    seed_ranking(store, identity, ("sauvola", "otsu", "reference"))
+    group = next(g for g in state(client)["groups"] if any(r["id"] == identity for r in g["receipts"]))
+    assert client.post(f"/api/receipts/{identity}/binarization", json={"variant": "reference", "version": group["version"]}).status_code == 200
+    grayscale_pick = client.get(f"/api/receipts/{identity}/image?top=0&render=final")
+    pixels = np.asarray(Image.open(io.BytesIO(grayscale_pick.content)).convert("L"))
+    assert np.array_equal(pixels, enhanced_array(trimmed_gray(master))[:pixels.shape[0]])  # still the export's page
 
 
 def test_binarization_choice_stops_once_approval_starts(runtime):
