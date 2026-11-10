@@ -104,6 +104,10 @@ dialog.inspection::backdrop{background:transparent}
 .page-recipe span{padding:7px 10px;color:#5b6b74;font-size:11px;letter-spacing:.05em;text-transform:uppercase}
 .page-recipe button{border:0;border-left:1px solid #c8d4da;border-radius:0;padding:7px 12px}
 .page-recipe button[aria-pressed="true"]{background:#175d50;color:white}
+/* The same two controls sit at the end of the strip row in the inspection dialog: one page, one
+   recipe, ruled from either window. Its buttons never stack, so the control keeps its width however
+   the row above it wraps and whichever recipe is in use. */
+.inspection-modal .page-recipe{flex-wrap:nowrap}
 .inspection-modal .strip{overflow:auto;background:#e8edef;margin:12px 0;flex:1;min-height:0}
 .strip img{display:block;max-width:none}
 dialog.editor{width:min(1000px,94vw);max-height:88dvh;margin:auto;padding:0;border:1px solid #d4dfe4;border-radius:14px;background:white;box-shadow:0 12px 44px #142a3540;overflow:hidden}

@@ -984,8 +984,12 @@ test("the archived page is ruled on its own switch, and a reading recipe can nev
       key: new URL(li.querySelector("img").src).searchParams.get("variant"),
       label: li.querySelector("strong").textContent.trim(),
     })));
-    const ink = () => page.evaluate(() => {  // the page the preview is showing, counted
-      const image = document.querySelector(".receipt .thumbnail");
+    // Counts the ink of whichever preview is being shown: a page ruling that never reached the pixels
+    // would leave these numbers identical, which is the whole point of the fixture's uneven lighting.
+    // Ink counted on whichever preview is on screen: a page ruling that never reached the pixels would
+    // leave these numbers identical, which is what the fixture's uneven lighting makes visible.
+    const ink = (selector = ".receipt .thumbnail") => page.evaluate(target => {
+      const image = document.querySelector(target);
       const canvas = document.createElement("canvas");
       canvas.width = image.naturalWidth; canvas.height = image.naturalHeight;
       const context = canvas.getContext("2d"); context.drawImage(image, 0, 0);
@@ -993,7 +997,7 @@ test("the archived page is ruled on its own switch, and a reading recipe can nev
       let dark = 0;
       for (let index = 0; index < pixels.length; index += 4) if (pixels[index] < 128) dark += 1;
       return { dark, total: canvas.width * canvas.height };
-    });
+    }, selector);
 
     const pageSwitch = page.locator(".scan-pane .page-recipe");
     const toggle = page.locator(".scan-pane .render-toggle");
@@ -1066,17 +1070,49 @@ test("the archived page is ruled on its own switch, and a reading recipe can nev
     assert.deepEqual([saved.groups[0].receipts[0].binarization, saved.groups[0].receipts[0].page_recipe], ["reference", "otsu"],
       "the two rulings are stored apart, and each stays where it was put");
 
-    // Handing the page to the other recipe reaches the same page the archive would have made by itself,
-    // and the full-resolution strips honour the one ruling too.
+    // Handing the page to the other recipe reaches exactly the page the archive would have made by
+    // itself: the switch's choices and the archive's default are the same processing, not a third thing.
     await pageSwitch.getByRole("button", { name: "Local (Sauvola)", exact: true }).click();
     await page.waitForFunction(() => { const image = document.querySelector(".receipt .thumbnail");
       return image.complete && new URL(image.src).searchParams.get("page") === "sauvola"; }, null, { timeout: 30000 });
     assert.equal((await ink()).dark, archive.dark, "the switch's other choice must produce the archive's own page exactly");
+
+    // Ruled from the strips too: the inspection dialog carries the same switch, offering the same two
+    // recipes with the same one in use, and ruling there re-renders the strip without moving the
+    // operator off the rows they were reading or nudging either control.
     await page.getByRole("button", { name: "Inspect full-resolution strips & OCR" }).click();
-    await page.locator(".inspection-modal").getByRole("button", { name: "Final binarized", exact: true }).click();
+    const stripSwitch = page.locator(".inspection-modal .page-recipe");
+    const stripToggle = page.locator(".inspection-modal .render-toggle");
+    await stripSwitch.waitFor({ timeout: 15000 });
+    assert.deepEqual(await page.evaluate(() => [...document.querySelectorAll(".inspection-modal .page-recipe button")]
+      .map(button => ({ label: button.textContent.trim(), pressed: button.getAttribute("aria-pressed") }))), offered,
+    "the strips must offer the same page recipes as the details screen, with the same recipe in use");
+    await stripToggle.getByRole("button", { name: "Final binarized", exact: true }).click();
     await page.waitForFunction(() => { const image = document.querySelector(".strip img");
       return image && image.complete && image.src.includes("render=final")
-        && new URL(image.src).searchParams.get("page") === "sauvola"; }, null, { timeout: 15000 });
+        && new URL(image.src).searchParams.get("page") === "sauvola"; }, null, { timeout: 30000 });
+    const place = await page.evaluate(() => new URL(document.querySelector(".strip img").src).searchParams.get("top"));
+    const unruled = await ink(".strip img");
+    const restingStrips = { page: await stripSwitch.boundingBox(), toggle: await stripToggle.boundingBox() };
+    await stripSwitch.getByRole("button", { name: "Global threshold", exact: true }).click();
+    await page.waitForFunction(() => { const image = document.querySelector(".strip img");
+      return image.complete && new URL(image.src).searchParams.get("page") === "otsu" && image.naturalWidth > 0; }, null, { timeout: 30000 });
+    const ruledStrip = await ink(".strip img");
+    assert(ruledStrip.dark > unruled.dark + unruled.total * 0.1,
+      `ruling the page among the strips must change the strip: ${unruled.dark} ink pixels, then ${ruledStrip.dark}`);
+    assert.equal(await page.evaluate(() => new URL(document.querySelector(".strip img").src).searchParams.get("top")), place,
+      "the page ruling must not move the operator off the rows they were reading");
+    for (const [name, box] of Object.entries({ "page switch": await stripSwitch.boundingBox(), "raw/final switch": await stripToggle.boundingBox() })) {
+      const before = name === "page switch" ? restingStrips.page : restingStrips.toggle;
+      assert(Math.abs(box.x - before.x) < 0.5 && Math.abs(box.y - before.y) < 0.5 && Math.abs(box.width - before.width) < 0.5,
+        `ruling the page in the strips moved the ${name}`);
+    }
+    // One page, one recipe: what was ruled among the strips is what the details screen previews.
+    await page.waitForFunction(() => { const image = document.querySelector(".receipt .thumbnail");
+      return image.complete && new URL(image.src).searchParams.get("page") === "otsu"; }, null, { timeout: 30000 });
+    assert.equal(await pageSwitch.getByRole("button", { name: "Global threshold", exact: true }).getAttribute("aria-pressed"), "true",
+      "both windows must show the same page recipe in use");
+    assert.equal((await ink()).dark, ruled.dark, "the page ruled from the strips is the page the details screen previews");
   }, false, true);
 });
 

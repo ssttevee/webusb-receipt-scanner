@@ -430,7 +430,8 @@ function ReceiptEditor({ receipt, group, refresh, select, report, onDirty }: {
           <label>Starting row<input type="number" min="0" max={height - 1} value={row} onInput={event => setRow(Math.max(0, Math.min(height - 1, Number(event.currentTarget.value))))} /></label>
           <button disabled={row + 512 >= height} onClick={() => setRow(row + 512)}>Next strip</button>
           <button onClick={() => setRow(Math.max(0, height - 512))}>Physical bottom</button>
-          <RenderToggle render={render} setRender={setRender} /></div>
+          <RenderToggle render={render} setRender={setRender} />
+          <PageRecipeToggle recipe={pageRendering} choose={choosePage} disabled={!editable || stale || pageBusy} /></div>
         <div class="strip"><img src={`/api/receipts/${receipt.id}/image?top=${row}${render === "final" ? `&render=final&page=${pageRendering}` : ""}`}
           alt={`Full-resolution ${render === "final" ? "binarized export" : "raw scan"} rows ${row}–${Math.min(row + 512, height)}`} /></div>
         <details><summary>Unvalidated local OCR evidence</summary><pre>{JSON.stringify(evidence, null, 2)}</pre></details>
